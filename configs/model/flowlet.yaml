@@ -1,0 +1,54 @@
+# FlowLet Model Configuration
+# Conditional 3D Brain MRI Synthesis using Wavelet Flow Matching
+
+_target_: flowlet.flowlet.FlowLet
+
+# Wavelet parameters
+wavelet: 'db4'        # Daubechies 4 wavelet
+wavelet_level: 3      # 3 levels of decomposition
+
+# Volume parameters
+volume_shape: [128, 128, 128]  # Target MRI volume shape (D, H, W)
+
+# U-Net 3D parameters
+hidden_dims: [64, 128, 256, 512]  # Channel dimensions for each level
+time_embed_dim: 256               # Timestep embedding dimension
+cond_embed_dim: 64                # Condition (age) embedding dimension
+num_res_blocks: 2                 # Residual blocks per level
+attention_levels: [2, 3]          # Levels with attention (0-indexed)
+dropout: 0.0                      # Dropout rate
+
+# CFM parameters
+sigma_min: 1e-4           # Minimum noise level for OT-CFM
+use_rectified_flow: false # Use rectified flow instead of OT-CFM
+
+# Training parameters
+learning_rate: 1e-4
+weight_decay: 0.01
+warmup_steps: 1000
+scheduler_type: "cosine"  # "cosine" or "constant"
+
+# Sampling parameters
+n_sample_steps: 32
+
+# Data statistics (for normalization)
+data_mean: 0.0
+data_std: 1.0
+
+# Age range for normalization (will be overridden by data config)
+age_min: 18.0
+age_max: 90.0
+
+# Model size variant: "small", "base", or "large"
+model_size: "base"
+
+# Optimizer (can be overridden in experiment config)
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  lr: ${model.learning_rate}
+  weight_decay: ${model.weight_decay}
+  betas: [0.9, 0.999]
+  eps: 1e-8
+
+scheduler: null

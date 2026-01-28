@@ -1,0 +1,38 @@
+# FOMO60k DataModule Configuration
+# For training FlowLet on FOMO60k brain MRI dataset
+
+_target_: flowlet.data.mri_datamodule.MRIDataModule
+
+name: fomo60k
+
+# Data paths
+data_dir: /home/fred/Projetos/FlowLet/FOMO60k
+train_metadata: null  # Will auto-discover .npy files
+val_metadata: null
+test_metadata: null
+
+# Volume parameters
+target_shape: [128, 128, 128]    # Target volume shape (D, H, W)
+age_range: [18.0, 90.0]          # Age range for normalization
+
+# DataLoader parameters
+batch_size: 2                    # Smaller batch for 3D volumes
+num_workers: 4
+pin_memory: true
+
+# Train/Val/Test split
+val_split: 0.1
+test_split: 0.05
+
+# Augmentation
+augment_train: true
+augment_val: false
+
+# Caching
+cache_data: false
+
+seed: ${seed}
+
+# Use NumPy files (.npy) - FOMO60k format
+use_numpy: true
+use_synthetic: false
