@@ -32,11 +32,14 @@ test: ## Run not slow tests
 test-full: ## Run all tests
 	pytest
 
-train-ljspeech: ## Train the model
-	python matcha/train.py experiment=ljspeech
+train: ## Train the FlowLet model
+	python flowlet/train.py experiment=flowlet_synthetic
 
-train-ljspeech-min: ## Train the model with minimum memory
-	python matcha/train.py experiment=ljspeech_min_memory
+train-fomo60k: ## Train the FlowLet model with FOMO60k dataset
+	python flowlet/train.py experiment=flowlet_fomo60k
 
-start_app: ## Start the app
-	python matcha/app.py
+train-oasis: ## Train the FlowLet model with OASIS dataset
+	python flowlet/train.py experiment=flowlet_oasis
+
+train-min-memory: ## Train the FlowLet model with minimum memory
+	python flowlet/train.py experiment=flowlet_min_memory

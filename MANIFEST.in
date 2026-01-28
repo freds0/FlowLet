@@ -3,12 +3,11 @@ include LICENSE.txt
 include requirements.*.txt
 include *.cff
 include requirements.txt
-include matcha/VERSION
-recursive-include matcha *.json
-recursive-include matcha *.html
-recursive-include matcha *.png
-recursive-include matcha *.md
-recursive-include matcha *.py
-recursive-include matcha *.pyx
+include flowlet/VERSION
+recursive-include flowlet *.json
+recursive-include flowlet *.html
+recursive-include flowlet *.png
+recursive-include flowlet *.md
+recursive-include flowlet *.py
 recursive-exclude tests *
 prune tests*

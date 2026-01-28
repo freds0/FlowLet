@@ -9,10 +9,6 @@ hydra-core==1.3.2
 hydra-colorlog==1.2.0
 hydra-optuna-sweeper==1.2.0
 
-# --------- FlowMAC dependencies --------- #
-vector-quantize-pytorch  # Necessário para o Quantizador Residual (RVQ)
-soundfile                # Necessário para salvar áudio na inferência
-
 # --------- FlowLet dependencies --------- #
 PyWavelets>=1.4.0        # 3D wavelet transforms for MRI processing
 nibabel>=5.0.0           # NIfTI file I/O for MRI volumes
@@ -30,25 +26,16 @@ pyrootutils
 pre-commit      # hooks for applying linters on commit
 rich            # beautiful text formatting in terminal
 pytest          # tests
-# sh            # for running bash commands in some tests (linux/macos only)
-phonemizer      # phonemization of text
 tensorboard
 wandb>=0.12.10
-librosa
-Cython
 numpy
 einops
-inflect
-Unidecode
 scipy
-torchaudio
 matplotlib
 pandas
-conformer==0.3.2
-diffusers # developed using version ==0.25.0
+diffusers       # developed using version ==0.25.0
 notebook
 ipywidgets
-gradio==3.43.2
 gdown
 wget
 seaborn
