@@ -8,6 +8,7 @@ defaults:
   - override /model: flowlet
   - override /callbacks: default
   - override /trainer: gpu
+  - override /logger: wandb
 
 task_name: "flowlet_fomo60k"
 run_name: "fomo60k_v1"
