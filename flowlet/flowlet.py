@@ -311,7 +311,7 @@ class FlowLet(LightningModule):
             print(f"Warning: Failed to log validation samples: {e}")
 
     def _log_sample_images(self) -> None:
-        """Generate and log sample MRI images to tensorboard/wandb."""
+        """Generate and log sample MRI images with ground-truth comparison."""
         import torchvision.utils as vutils
 
         # Get a sample batch for comparison
@@ -321,91 +321,136 @@ class FlowLet(LightningModule):
 
         batch = next(iter(val_dataloader))
 
-        # Generate samples for 4 different ages
-        sample_ages = torch.tensor([25.0, 45.0, 65.0, 85.0], device=self.device)
+        # Move batch to device
+        real_volumes = batch['volume'].to(self.device)  # (B, 1, D, H, W)
+        real_ages = batch['age'].to(self.device)  # (B, 1)
 
+        batch_size = min(4, real_volumes.shape[0])
+
+        # Get the actual ages from the batch
+        sample_ages = real_ages[:batch_size].squeeze(1)  # (batch_size,)
+        real_vols_subset = real_volumes[:batch_size]  # (batch_size, 1, D, H, W)
+
+        # Generate samples with the same ages as ground-truth
         with torch.inference_mode():
-            samples = self.synthesize(sample_ages, n_steps=min(16, self.n_sample_steps))
+            generated_vols = self.synthesize(sample_ages, n_steps=min(16, self.n_sample_steps))
 
-        # samples shape: (4, 1, D, H, W)
-        if samples.shape[2] == 0:
+        # generated_vols shape: (batch_size, 1, D, H, W)
+        if generated_vols.shape[2] == 0:
             return
 
-        D, H, W = samples.shape[2], samples.shape[3], samples.shape[4]
+        D, H, W = generated_vols.shape[2], generated_vols.shape[3], generated_vols.shape[4]
 
-        # Create grid of middle slices (axial view)
-        axial_slices = []
-        for i in range(4):
-            slice_img = samples[i, 0, D // 2, :, :]  # (H, W)
-            slice_img = self._normalize_slice(slice_img)
-            axial_slices.append(slice_img.unsqueeze(0))  # (1, H, W)
+        # ====================================================================
+        # AXIAL VIEW - Side by side comparison
+        # ====================================================================
+        axial_comparison_slices = []
+        for i in range(batch_size):
+            # Real slice
+            real_slice = self._normalize_slice(real_vols_subset[i, 0, D // 2, :, :])
+            axial_comparison_slices.append(real_slice.unsqueeze(0))
 
-        # Stack and create 2x2 grid
-        axial_grid = vutils.make_grid(
-            torch.stack(axial_slices, dim=0),  # (4, 1, H, W)
-            nrow=2,
+            # Generated slice
+            gen_slice = self._normalize_slice(generated_vols[i, 0, D // 2, :, :])
+            axial_comparison_slices.append(gen_slice.unsqueeze(0))
+
+        # Create comparison grid: [Real1, Gen1, Real2, Gen2, ...]
+        axial_comparison_grid = vutils.make_grid(
+            torch.stack(axial_comparison_slices, dim=0),
+            nrow=4,  # 2 pairs per row
             normalize=False,
             padding=2,
             pad_value=1.0
         )
 
-        # Create grid of sagittal slices
-        sagittal_slices = []
-        for i in range(4):
-            slice_img = samples[i, 0, :, H // 2, :]  # (D, W)
-            slice_img = self._normalize_slice(slice_img)
-            sagittal_slices.append(slice_img.unsqueeze(0))
+        # ====================================================================
+        # SAGITTAL VIEW - Side by side comparison
+        # ====================================================================
+        sagittal_comparison_slices = []
+        for i in range(batch_size):
+            # Real slice
+            real_slice = self._normalize_slice(real_vols_subset[i, 0, :, H // 2, :])
+            sagittal_comparison_slices.append(real_slice.unsqueeze(0))
 
-        sagittal_grid = vutils.make_grid(
-            torch.stack(sagittal_slices, dim=0),
-            nrow=2,
+            # Generated slice
+            gen_slice = self._normalize_slice(generated_vols[i, 0, :, H // 2, :])
+            sagittal_comparison_slices.append(gen_slice.unsqueeze(0))
+
+        sagittal_comparison_grid = vutils.make_grid(
+            torch.stack(sagittal_comparison_slices, dim=0),
+            nrow=4,
             normalize=False,
             padding=2,
             pad_value=1.0
         )
 
-        # Create grid of coronal slices
-        coronal_slices = []
-        for i in range(4):
-            slice_img = samples[i, 0, :, :, W // 2]  # (D, H)
-            slice_img = self._normalize_slice(slice_img)
-            coronal_slices.append(slice_img.unsqueeze(0))
+        # ====================================================================
+        # CORONAL VIEW - Side by side comparison
+        # ====================================================================
+        coronal_comparison_slices = []
+        for i in range(batch_size):
+            # Real slice
+            real_slice = self._normalize_slice(real_vols_subset[i, 0, :, :, W // 2])
+            coronal_comparison_slices.append(real_slice.unsqueeze(0))
 
-        coronal_grid = vutils.make_grid(
-            torch.stack(coronal_slices, dim=0),
-            nrow=2,
+            # Generated slice
+            gen_slice = self._normalize_slice(generated_vols[i, 0, :, :, W // 2])
+            coronal_comparison_slices.append(gen_slice.unsqueeze(0))
+
+        coronal_comparison_grid = vutils.make_grid(
+            torch.stack(coronal_comparison_slices, dim=0),
+            nrow=4,
             normalize=False,
             padding=2,
             pad_value=1.0
         )
 
-        # Get real sample for comparison
-        real_axial = None
-        if 'volume' in batch and batch['volume'].shape[0] > 0:
-            real_vol = batch['volume'][0].to(self.device)  # (1, D, H, W)
-            if real_vol.shape[1] > 0:
-                real_axial = self._normalize_slice(real_vol[0, D // 2, :, :])
+        # ====================================================================
+        # COMPUTE METRICS
+        # ====================================================================
+        metrics = self._compute_comparison_metrics(real_vols_subset, generated_vols)
+
+        # ====================================================================
+        # Also generate samples for fixed ages (for consistency across epochs)
+        # ====================================================================
+        fixed_ages = torch.tensor([25.0, 45.0, 65.0, 85.0], device=self.device)
+        with torch.inference_mode():
+            fixed_samples = self.synthesize(fixed_ages, n_steps=min(16, self.n_sample_steps))
+
+        fixed_axial_slices = []
+        for i in range(4):
+            slice_img = fixed_samples[i, 0, D // 2, :, :]
+            slice_img = self._normalize_slice(slice_img)
+            fixed_axial_slices.append(slice_img.unsqueeze(0))
+
+        fixed_axial_grid = vutils.make_grid(
+            torch.stack(fixed_axial_slices, dim=0),
+            nrow=2,
+            normalize=False,
+            padding=2,
+            pad_value=1.0
+        )
 
         # Log to all available loggers
         self._log_images_to_loggers(
-            axial_grid=axial_grid,
-            sagittal_grid=sagittal_grid,
-            coronal_grid=coronal_grid,
-            axial_slices=axial_slices,
+            axial_comparison_grid=axial_comparison_grid,
+            sagittal_comparison_grid=sagittal_comparison_grid,
+            coronal_comparison_grid=coronal_comparison_grid,
+            fixed_axial_grid=fixed_axial_grid,
             sample_ages=sample_ages,
-            real_axial=real_axial,
+            metrics=metrics,
         )
 
     def _log_images_to_loggers(
         self,
-        axial_grid: torch.Tensor,
-        sagittal_grid: torch.Tensor,
-        coronal_grid: torch.Tensor,
-        axial_slices: list,
+        axial_comparison_grid: torch.Tensor,
+        sagittal_comparison_grid: torch.Tensor,
+        coronal_comparison_grid: torch.Tensor,
+        fixed_axial_grid: torch.Tensor,
         sample_ages: torch.Tensor,
-        real_axial: Optional[torch.Tensor] = None,
+        metrics: Dict[str, float],
     ) -> None:
-        """Log images to all available loggers (TensorBoard, WandB, etc.)."""
+        """Log images and metrics to all available loggers (TensorBoard, WandB, etc.)."""
         # Get list of loggers
         loggers = self.loggers if hasattr(self, 'loggers') and self.loggers else []
         if not loggers and self.logger is not None:
@@ -415,48 +460,81 @@ class FlowLet(LightningModule):
             # TensorBoard logging
             if hasattr(logger, 'experiment') and hasattr(logger.experiment, 'add_image'):
                 exp = logger.experiment
-                exp.add_image('samples/axial_grid', axial_grid.cpu(), self.current_epoch)
-                exp.add_image('samples/sagittal_grid', sagittal_grid.cpu(), self.current_epoch)
-                exp.add_image('samples/coronal_grid', coronal_grid.cpu(), self.current_epoch)
 
-                # Log individual samples with age labels
-                for i, age in enumerate(sample_ages):
-                    exp.add_image(
-                        f'samples/age_{int(age.item())}_axial',
-                        axial_slices[i].cpu(),
-                        self.current_epoch
-                    )
+                # Log comparison grids (Real vs Generated side-by-side)
+                exp.add_image(
+                    'comparison/axial_real_vs_gen',
+                    axial_comparison_grid.cpu(),
+                    self.current_epoch
+                )
+                exp.add_image(
+                    'comparison/sagittal_real_vs_gen',
+                    sagittal_comparison_grid.cpu(),
+                    self.current_epoch
+                )
+                exp.add_image(
+                    'comparison/coronal_real_vs_gen',
+                    coronal_comparison_grid.cpu(),
+                    self.current_epoch
+                )
 
-                # Log real sample
-                if real_axial is not None:
-                    exp.add_image(
-                        'samples/real_axial',
-                        real_axial.unsqueeze(0).cpu(),
-                        self.current_epoch
-                    )
+                # Log fixed age samples (for tracking consistency across epochs)
+                exp.add_image(
+                    'samples/fixed_ages_[25_45_65_85]',
+                    fixed_axial_grid.cpu(),
+                    self.current_epoch
+                )
+
+                # Log comparison metrics
+                if hasattr(exp, 'add_scalar'):
+                    for metric_name, metric_value in metrics.items():
+                        exp.add_scalar(
+                            f'comparison_metrics/{metric_name}',
+                            metric_value,
+                            self.current_epoch
+                        )
 
             # WandB logging
             elif hasattr(logger, 'experiment') and hasattr(logger.experiment, 'log'):
                 try:
                     import wandb
+
                     log_dict = {
-                        'samples/axial_grid': wandb.Image(axial_grid.cpu(), caption="Ages: 25, 45, 65, 85"),
-                        'samples/sagittal_grid': wandb.Image(sagittal_grid.cpu(), caption="Sagittal view"),
-                        'samples/coronal_grid': wandb.Image(coronal_grid.cpu(), caption="Coronal view"),
+                        'comparison/axial_real_vs_gen': wandb.Image(
+                            axial_comparison_grid.cpu(),
+                            caption="Axial view: Real (left) vs Generated (right)"
+                        ),
+                        'comparison/sagittal_real_vs_gen': wandb.Image(
+                            sagittal_comparison_grid.cpu(),
+                            caption="Sagittal view: Real (left) vs Generated (right)"
+                        ),
+                        'comparison/coronal_real_vs_gen': wandb.Image(
+                            coronal_comparison_grid.cpu(),
+                            caption="Coronal view: Real (left) vs Generated (right)"
+                        ),
+                        'samples/fixed_ages': wandb.Image(
+                            fixed_axial_grid.cpu(),
+                            caption="Fixed ages: 25, 45, 65, 85 years"
+                        ),
                     }
-                    # Add individual samples
-                    for i, age in enumerate(sample_ages):
-                        log_dict[f'samples/age_{int(age.item())}'] = wandb.Image(
-                            axial_slices[i].cpu(),
-                            caption=f"Age {int(age.item())} years"
-                        )
-                    # Add real sample
-                    if real_axial is not None:
-                        log_dict['samples/real'] = wandb.Image(real_axial.cpu(), caption="Real sample")
+
+                    # Add metrics
+                    for metric_name, metric_value in metrics.items():
+                        log_dict[f'comparison_metrics/{metric_name}'] = metric_value
 
                     logger.experiment.log(log_dict)
+
                 except (ImportError, AttributeError, Exception) as e:
                     print(f"Warning: Failed to log to WandB: {e}")
+
+        # Also log metrics directly to Lightning
+        for metric_name, metric_value in metrics.items():
+            self.log(
+                f'val/comparison_{metric_name}',
+                metric_value,
+                prog_bar=False,
+                sync_dist=True
+            )
 
     def _normalize_slice(self, slice_tensor: torch.Tensor) -> torch.Tensor:
         """Normalize a 2D slice to [0, 1] range."""
@@ -465,6 +543,64 @@ class FlowLet(LightningModule):
         if max_val - min_val > 1e-8:
             return (slice_tensor - min_val) / (max_val - min_val)
         return slice_tensor - min_val
+
+    def _compute_comparison_metrics(
+        self,
+        real_vols: torch.Tensor,
+        gen_vols: torch.Tensor
+    ) -> Dict[str, float]:
+        """
+        Compute comparison metrics between real and generated volumes.
+
+        Args:
+            real_vols: (B, 1, D, H, W) - Real volumes
+            gen_vols: (B, 1, D, H, W) - Generated volumes
+
+        Returns:
+            Dictionary with metric values
+        """
+        metrics = {}
+
+        # MSE (Mean Squared Error)
+        mse = F.mse_loss(gen_vols, real_vols)
+        metrics['mse'] = mse.item()
+
+        # MAE (Mean Absolute Error)
+        mae = F.l1_loss(gen_vols, real_vols)
+        metrics['mae'] = mae.item()
+
+        # PSNR (Peak Signal-to-Noise Ratio)
+        # PSNR = 10 * log10(MAX^2 / MSE)
+        # Assuming normalized data with max value around 5 (after z-score)
+        max_val = max(real_vols.max().item(), gen_vols.max().item())
+        if mse.item() > 0:
+            psnr = 10 * math.log10((max_val ** 2) / mse.item())
+            metrics['psnr'] = psnr
+        else:
+            metrics['psnr'] = 100.0  # Perfect match
+
+        # Structural Similarity (simplified version without external library)
+        # Compute correlation coefficient as a proxy
+        real_flat = real_vols.flatten()
+        gen_flat = gen_vols.flatten()
+
+        # Pearson correlation
+        real_mean = real_flat.mean()
+        gen_mean = gen_flat.mean()
+
+        numerator = ((real_flat - real_mean) * (gen_flat - gen_mean)).sum()
+        denominator = torch.sqrt(
+            ((real_flat - real_mean) ** 2).sum() *
+            ((gen_flat - gen_mean) ** 2).sum()
+        )
+
+        if denominator > 1e-8:
+            correlation = (numerator / denominator).item()
+            metrics['correlation'] = correlation
+        else:
+            metrics['correlation'] = 0.0
+
+        return metrics
 
     def configure_optimizers(self) -> Dict:
         """Configure optimizer and learning rate scheduler."""
