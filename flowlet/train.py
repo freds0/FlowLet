@@ -90,6 +90,10 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         log.info("Logging hyperparameters!")
         utils.log_hyperparameters(object_dict)
 
+    # Allow omegaconf types in checkpoint loading (needed for PyTorch >= 2.6)
+    from omegaconf import ListConfig, DictConfig as OmegaDictConfig
+    torch.serialization.add_safe_globals([ListConfig, OmegaDictConfig])
+
     # Training
     if cfg.get("train"):
         log.info("Starting training!")
