@@ -1,0 +1,34 @@
+# OpenBHB Dataset Configuration
+# For fine-tuning FlowLet on OpenBHB brain MRI data
+
+_target_: flowlet.data.mri_datamodule.OpenBHBDataModule
+
+# Data paths (OpenBHB train sample)
+data_dir: /home/fred/Projetos/Einstein/openbhb_train_sample
+metadata_file: /home/fred/Projetos/Einstein/openbhb_train_sample/train.tsv
+
+# Data parameters
+target_shape: [128, 128, 128]  # Resize from (182, 218, 182) to (128, 128, 128)
+age_range: null  # Auto-infer from data (OpenBHB has wide age range)
+
+# DataLoader parameters
+batch_size: 2  # Keep small for 3D volumes
+num_workers: 4
+pin_memory: true
+
+# Split parameters
+val_split: 0.1   # 10% for validation
+test_split: 0.1  # 10% for testing
+
+# Augmentation
+augment_train: true
+augment_val: false
+
+# Memory optimization
+cache_data: false  # Set to true if you have enough RAM
+
+# Site information
+include_site: false  # Set to true to include site info for domain adaptation
+
+# Reproducibility
+seed: 42
