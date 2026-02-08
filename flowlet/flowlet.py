@@ -299,6 +299,18 @@ class FlowLet(LightningModule):
 
         return loss
 
+    def test_step(self, batch: Dict[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
+        """PyTorch Lightning test step."""
+        volume = batch['volume']
+        age = batch['age']
+
+        loss, _ = self(volume, age)
+
+        # Logging
+        self.log('test/loss', loss, prog_bar=True, sync_dist=True)
+
+        return loss
+
     def on_validation_epoch_end(self) -> None:
         """Log sample images at the end of validation."""
         if not self.trainer.is_global_zero:
