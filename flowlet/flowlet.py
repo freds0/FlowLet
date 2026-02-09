@@ -120,11 +120,13 @@ class FlowLet(LightningModule):
             level=wavelet_level,
         )
 
-        # Compute wavelet output shape
+        # Compute wavelet output shape by running a dummy forward pass
+        # (simple division by 2**level is inaccurate for most wavelet modes/filters)
         wavelet_channels = self.wavelet.num_channels
-        factor = 2 ** wavelet_level
-        wavelet_spatial = tuple(s // factor for s in volume_shape)
-        self.wavelet_shape = (wavelet_channels, *wavelet_spatial)
+        dummy = torch.zeros(1, 1, *volume_shape)
+        dummy_coeffs = self.wavelet.forward(dummy)
+        self.wavelet_shape = tuple(dummy_coeffs.shape[1:])
+        self.wavelet.reset_cache()
 
         # Select U-Net variant
         if model_size == "small":
@@ -223,15 +225,22 @@ class FlowLet(LightningModule):
 
         # Initialize wavelet cache for reconstruction
         # We need to run a dummy forward pass to set up the reconstruction shapes
+        # and determine the actual wavelet coefficient spatial dimensions
         if self.wavelet._original_shape is None:
             dummy_vol = torch.zeros(1, 1, *self.volume_shape, device=self.device)
-            _ = self.wavelet.forward(dummy_vol)
+            dummy_coeffs = self.wavelet.forward(dummy_vol)
+            self._actual_wavelet_shape = tuple(dummy_coeffs.shape[1:])
+        if not hasattr(self, '_actual_wavelet_shape'):
+            dummy_vol = torch.zeros(1, 1, *self.volume_shape, device=self.device)
+            dummy_coeffs = self.wavelet.forward(dummy_vol)
+            self._actual_wavelet_shape = tuple(dummy_coeffs.shape[1:])
 
-        # Sample in wavelet domain
+        # Sample in wavelet domain using actual wavelet output shape
+        sample_shape = self._actual_wavelet_shape
         if return_trajectory:
             coeffs, trajectory = self.cfm.sample_with_trajectory(
                 age_norm,
-                self.wavelet_shape,
+                sample_shape,
                 n_steps=n_steps,
                 temperature=temperature,
                 device=self.device,
@@ -242,7 +251,7 @@ class FlowLet(LightningModule):
         else:
             coeffs = self.cfm.sample(
                 age_norm,
-                self.wavelet_shape,
+                sample_shape,
                 n_steps=n_steps,
                 temperature=temperature,
                 device=self.device,
@@ -323,8 +332,15 @@ class FlowLet(LightningModule):
             print(f"Warning: Failed to log validation samples: {e}")
 
     def _log_sample_images(self) -> None:
-        """Generate and log sample MRI images with ground-truth comparison."""
-        import torchvision.utils as vutils
+        """Generate and log sample MRI images with ground-truth comparison.
+
+        Creates matplotlib figures with per-sample age labels for three
+        anatomical views (axial, sagittal, coronal) plus fixed-age samples,
+        and logs them to TensorBoard and WandB.
+        """
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
 
         # Get a sample batch for comparison
         val_dataloader = self.trainer.val_dataloaders
@@ -351,201 +367,161 @@ class FlowLet(LightningModule):
         if generated_vols.shape[2] == 0:
             return
 
-        D, H, W = generated_vols.shape[2], generated_vols.shape[3], generated_vols.shape[4]
+        D = generated_vols.shape[2]
+        H = generated_vols.shape[3]
+        W = generated_vols.shape[4]
+        ages_list = [sample_ages[i].item() for i in range(batch_size)]
 
-        # ====================================================================
-        # AXIAL VIEW - Side by side comparison
-        # ====================================================================
-        axial_comparison_slices = []
-        for i in range(batch_size):
-            # Real slice
-            real_slice = self._normalize_slice(real_vols_subset[i, 0, D // 2, :, :])
-            axial_comparison_slices.append(real_slice.unsqueeze(0))
+        # Helper: build a 2-row comparison figure (Real top, Generated bottom)
+        def make_comparison_fig(view_name, real_slices, gen_slices):
+            n = len(real_slices)
+            fig, axes = plt.subplots(2, n, figsize=(4 * n, 8))
+            if n == 1:
+                axes = axes.reshape(2, 1)
+            fig.suptitle(
+                f"{view_name} -- Real (top) vs Generated (bottom) | Epoch {self.current_epoch}",
+                fontsize=13,
+            )
+            for i in range(n):
+                r = self._normalize_slice(real_slices[i]).cpu().numpy()
+                g = self._normalize_slice(gen_slices[i]).cpu().numpy()
+                axes[0, i].imshow(r, cmap="gray", vmin=0, vmax=1)
+                axes[0, i].set_title(f"Real | age={ages_list[i]:.1f}", fontsize=10)
+                axes[0, i].axis("off")
+                axes[1, i].imshow(g, cmap="gray", vmin=0, vmax=1)
+                axes[1, i].set_title(f"Gen | age={ages_list[i]:.1f}", fontsize=10)
+                axes[1, i].axis("off")
+            fig.tight_layout()
+            return fig
 
-            # Generated slice
-            gen_slice = self._normalize_slice(generated_vols[i, 0, D // 2, :, :])
-            axial_comparison_slices.append(gen_slice.unsqueeze(0))
-
-        # Create comparison grid: [Real1, Gen1, Real2, Gen2, ...]
-        axial_comparison_grid = vutils.make_grid(
-            torch.stack(axial_comparison_slices, dim=0),
-            nrow=4,  # 2 pairs per row
-            normalize=False,
-            padding=2,
-            pad_value=1.0
+        # Build comparison figures for three anatomical views
+        axial_fig = make_comparison_fig(
+            "Axial",
+            [real_vols_subset[i, 0, D // 2, :, :] for i in range(batch_size)],
+            [generated_vols[i, 0, D // 2, :, :] for i in range(batch_size)],
+        )
+        sagittal_fig = make_comparison_fig(
+            "Sagittal",
+            [real_vols_subset[i, 0, :, :, W // 2] for i in range(batch_size)],
+            [generated_vols[i, 0, :, :, W // 2] for i in range(batch_size)],
+        )
+        coronal_fig = make_comparison_fig(
+            "Coronal",
+            [real_vols_subset[i, 0, :, H // 2, :] for i in range(batch_size)],
+            [generated_vols[i, 0, :, H // 2, :] for i in range(batch_size)],
         )
 
-        # ====================================================================
-        # SAGITTAL VIEW - Side by side comparison
-        # ====================================================================
-        sagittal_comparison_slices = []
-        for i in range(batch_size):
-            # Real slice
-            real_slice = self._normalize_slice(real_vols_subset[i, 0, :, H // 2, :])
-            sagittal_comparison_slices.append(real_slice.unsqueeze(0))
-
-            # Generated slice
-            gen_slice = self._normalize_slice(generated_vols[i, 0, :, H // 2, :])
-            sagittal_comparison_slices.append(gen_slice.unsqueeze(0))
-
-        sagittal_comparison_grid = vutils.make_grid(
-            torch.stack(sagittal_comparison_slices, dim=0),
-            nrow=4,
-            normalize=False,
-            padding=2,
-            pad_value=1.0
-        )
-
-        # ====================================================================
-        # CORONAL VIEW - Side by side comparison
-        # ====================================================================
-        coronal_comparison_slices = []
-        for i in range(batch_size):
-            # Real slice
-            real_slice = self._normalize_slice(real_vols_subset[i, 0, :, :, W // 2])
-            coronal_comparison_slices.append(real_slice.unsqueeze(0))
-
-            # Generated slice
-            gen_slice = self._normalize_slice(generated_vols[i, 0, :, :, W // 2])
-            coronal_comparison_slices.append(gen_slice.unsqueeze(0))
-
-        coronal_comparison_grid = vutils.make_grid(
-            torch.stack(coronal_comparison_slices, dim=0),
-            nrow=4,
-            normalize=False,
-            padding=2,
-            pad_value=1.0
-        )
-
-        # ====================================================================
-        # COMPUTE METRICS
-        # ====================================================================
+        # Compute comparison metrics
         metrics = self._compute_comparison_metrics(real_vols_subset, generated_vols)
 
-        # ====================================================================
-        # Also generate samples for fixed ages (for consistency across epochs)
-        # ====================================================================
-        fixed_ages = torch.tensor([25.0, 45.0, 65.0, 85.0], device=self.device)
+        # Generate samples for fixed ages (for consistency across epochs)
+        fixed_ages_values = [25.0, 45.0, 65.0, 85.0]
+        fixed_ages = torch.tensor(fixed_ages_values, device=self.device)
         with torch.inference_mode():
             fixed_samples = self.synthesize(fixed_ages, n_steps=min(16, self.n_sample_steps))
 
-        fixed_axial_slices = []
-        for i in range(4):
-            slice_img = fixed_samples[i, 0, D // 2, :, :]
-            slice_img = self._normalize_slice(slice_img)
-            fixed_axial_slices.append(slice_img.unsqueeze(0))
-
-        fixed_axial_grid = vutils.make_grid(
-            torch.stack(fixed_axial_slices, dim=0),
-            nrow=2,
-            normalize=False,
-            padding=2,
-            pad_value=1.0
+        fixed_fig, fixed_axes = plt.subplots(1, 4, figsize=(16, 4))
+        fixed_fig.suptitle(
+            f"Fixed Ages -- Axial Slices | Epoch {self.current_epoch}", fontsize=13,
         )
+        for i in range(4):
+            s = self._normalize_slice(fixed_samples[i, 0, D // 2, :, :]).cpu().numpy()
+            fixed_axes[i].imshow(s, cmap="gray", vmin=0, vmax=1)
+            fixed_axes[i].set_title(f"Age {fixed_ages_values[i]:.0f}", fontsize=10)
+            fixed_axes[i].axis("off")
+        fixed_fig.tight_layout()
 
         # Log to all available loggers
-        self._log_images_to_loggers(
-            axial_comparison_grid=axial_comparison_grid,
-            sagittal_comparison_grid=sagittal_comparison_grid,
-            coronal_comparison_grid=coronal_comparison_grid,
-            fixed_axial_grid=fixed_axial_grid,
-            sample_ages=sample_ages,
+        self._log_figures_to_loggers(
+            axial_fig=axial_fig,
+            sagittal_fig=sagittal_fig,
+            coronal_fig=coronal_fig,
+            fixed_ages_fig=fixed_fig,
             metrics=metrics,
         )
 
-    def _log_images_to_loggers(
+        # Free memory
+        plt.close(axial_fig)
+        plt.close(sagittal_fig)
+        plt.close(coronal_fig)
+        plt.close(fixed_fig)
+
+    def _log_figures_to_loggers(
         self,
-        axial_comparison_grid: torch.Tensor,
-        sagittal_comparison_grid: torch.Tensor,
-        coronal_comparison_grid: torch.Tensor,
-        fixed_axial_grid: torch.Tensor,
-        sample_ages: torch.Tensor,
+        axial_fig,
+        sagittal_fig,
+        coronal_fig,
+        fixed_ages_fig,
         metrics: Dict[str, float],
     ) -> None:
-        """Log images and metrics to all available loggers (TensorBoard, WandB, etc.)."""
-        # Get list of loggers
+        """Log matplotlib figures and metrics to all available loggers."""
         loggers = self.loggers if hasattr(self, 'loggers') and self.loggers else []
         if not loggers and self.logger is not None:
             loggers = [self.logger]
 
+        step = self.global_step
+
         for logger in loggers:
-            # TensorBoard logging
-            if hasattr(logger, 'experiment') and hasattr(logger.experiment, 'add_image'):
+            logger_cls = type(logger).__name__
+
+            # --- TensorBoard ---
+            if "TensorBoard" in logger_cls:
                 exp = logger.experiment
-
-                # Log comparison grids (Real vs Generated side-by-side)
-                exp.add_image(
-                    'comparison/axial_real_vs_gen',
-                    axial_comparison_grid.cpu(),
-                    self.current_epoch
+                # close=False because we manage figure lifecycle ourselves
+                exp.add_figure(
+                    "comparison/axial_real_vs_gen", axial_fig, step, close=False,
                 )
-                exp.add_image(
-                    'comparison/sagittal_real_vs_gen',
-                    sagittal_comparison_grid.cpu(),
-                    self.current_epoch
+                exp.add_figure(
+                    "comparison/sagittal_real_vs_gen", sagittal_fig, step, close=False,
                 )
-                exp.add_image(
-                    'comparison/coronal_real_vs_gen',
-                    coronal_comparison_grid.cpu(),
-                    self.current_epoch
+                exp.add_figure(
+                    "comparison/coronal_real_vs_gen", coronal_fig, step, close=False,
                 )
-
-                # Log fixed age samples (for tracking consistency across epochs)
-                exp.add_image(
-                    'samples/fixed_ages_[25_45_65_85]',
-                    fixed_axial_grid.cpu(),
-                    self.current_epoch
+                exp.add_figure(
+                    "samples/fixed_ages_[25_45_65_85]", fixed_ages_fig, step, close=False,
                 )
+                for metric_name, metric_value in metrics.items():
+                    exp.add_scalar(
+                        f"comparison_metrics/{metric_name}", metric_value, step,
+                    )
 
-                # Log comparison metrics
-                if hasattr(exp, 'add_scalar'):
-                    for metric_name, metric_value in metrics.items():
-                        exp.add_scalar(
-                            f'comparison_metrics/{metric_name}',
-                            metric_value,
-                            self.current_epoch
-                        )
-
-            # WandB logging
-            elif hasattr(logger, 'experiment') and hasattr(logger.experiment, 'log'):
+            # --- WandB ---
+            if "Wandb" in logger_cls or "WandB" in logger_cls:
                 try:
                     import wandb
 
                     log_dict = {
-                        'comparison/axial_real_vs_gen': wandb.Image(
-                            axial_comparison_grid.cpu(),
-                            caption="Axial view: Real (left) vs Generated (right)"
+                        "comparison/axial_real_vs_gen": wandb.Image(
+                            axial_fig,
+                            caption="Axial: Real (top) vs Generated (bottom)",
                         ),
-                        'comparison/sagittal_real_vs_gen': wandb.Image(
-                            sagittal_comparison_grid.cpu(),
-                            caption="Sagittal view: Real (left) vs Generated (right)"
+                        "comparison/sagittal_real_vs_gen": wandb.Image(
+                            sagittal_fig,
+                            caption="Sagittal: Real (top) vs Generated (bottom)",
                         ),
-                        'comparison/coronal_real_vs_gen': wandb.Image(
-                            coronal_comparison_grid.cpu(),
-                            caption="Coronal view: Real (left) vs Generated (right)"
+                        "comparison/coronal_real_vs_gen": wandb.Image(
+                            coronal_fig,
+                            caption="Coronal: Real (top) vs Generated (bottom)",
                         ),
-                        'samples/fixed_ages': wandb.Image(
-                            fixed_axial_grid.cpu(),
-                            caption="Fixed ages: 25, 45, 65, 85 years"
+                        "samples/fixed_ages": wandb.Image(
+                            fixed_ages_fig,
+                            caption="Fixed ages: 25, 45, 65, 85 years",
                         ),
                     }
-
-                    # Add metrics
                     for metric_name, metric_value in metrics.items():
-                        log_dict[f'comparison_metrics/{metric_name}'] = metric_value
+                        log_dict[f"comparison_metrics/{metric_name}"] = metric_value
 
-                    logger.experiment.log(log_dict)
-
-                except (ImportError, AttributeError, Exception) as e:
+                    logger.experiment.log(log_dict, commit=False)
+                except (ImportError, Exception) as e:
                     print(f"Warning: Failed to log to WandB: {e}")
 
-        # Also log metrics directly to Lightning
+        # Also log metrics via Lightning
         for metric_name, metric_value in metrics.items():
             self.log(
-                f'val/comparison_{metric_name}',
+                f"val/comparison_{metric_name}",
                 metric_value,
                 prog_bar=False,
-                sync_dist=True
+                sync_dist=True,
             )
 
     def _normalize_slice(self, slice_tensor: torch.Tensor) -> torch.Tensor:
