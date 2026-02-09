@@ -104,9 +104,9 @@ class OpenBHBDataset(Dataset):
         # Check if we need to construct the quasiraw_3d_path
         if 'quasiraw_3d_path' not in df.columns and 'participant_id' in df.columns:
             # OpenBHB format: construct path from participant_id
-            # Format: train/quasiraw_3d/{participant_id}_quasiraw_3d.npy
+            # Format: quasiraw_3d/{participant_id}_quasiraw_3d.npy
             df['quasiraw_3d_path'] = df['participant_id'].astype(str).apply(
-                lambda x: f"train/quasiraw_3d/{x}_quasiraw_3d.npy"
+                lambda x: f"quasiraw_3d/{x}_quasiraw_3d.npy"
             )
             print("  ℹ Constructed quasiraw_3d_path from participant_id")
 

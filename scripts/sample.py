@@ -129,7 +129,7 @@ def parse_args():
 def load_model(checkpoint_path: str, device: str) -> FlowLet:
     """Load FlowLet model from checkpoint."""
     print(f"Loading model from {checkpoint_path}...")
-    model = FlowLet.load_from_checkpoint(checkpoint_path, map_location=device)
+    model = FlowLet.load_from_checkpoint(checkpoint_path, map_location=device, weights_only=False)
     model = model.to(device)
     model.eval()
     print(f"Model loaded: {model}")
