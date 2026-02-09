@@ -92,8 +92,8 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
 
     # Allow loading checkpoints without weights_only restriction (needed for PyTorch >= 2.6)
     from omegaconf import ListConfig, DictConfig as OmegaDictConfig
-    torch.serialization.add_safe_globals([ListConfig, OmegaDictConfig])
-    torch.serialization.default_load_weights_only = False
+    from omegaconf.base import ContainerMetadata
+    torch.serialization.add_safe_globals([ListConfig, OmegaDictConfig, ContainerMetadata])
 
     # Training
     if cfg.get("train"):
@@ -113,7 +113,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         if ckpt_path == "":
             log.warning("Best checkpoint not found! Using current weights for testing...")
             ckpt_path = None
-        trainer.test(model=model, datamodule=datamodule, ckpt_path=ckpt_path)
+        trainer.test(model=model, datamodule=datamodule, ckpt_path=ckpt_path, weights_only=False)
         log.info(f"Best checkpoint path: {ckpt_path}")
 
     test_metrics = trainer.callback_metrics
