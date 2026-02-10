@@ -110,6 +110,10 @@ def parse_args():
         "--temperature", type=float, default=1.0,
         help="Sampling temperature",
     )
+    parser.add_argument(
+        "--n_age_repeats", type=int, default=5,
+        help="Stochastic evaluations per candidate age for brain age prediction",
+    )
 
     # Visualization
     parser.add_argument(
@@ -259,6 +263,63 @@ def compute_sample_metrics(
 
 
 @torch.no_grad()
+def predict_brain_age(
+    model: FlowLet,
+    volume: torch.Tensor,
+    n_repeats: int = 5,
+    coarse_step: float = 4.0,
+    fine_step: float = 1.0,
+    fine_range: float = 4.0,
+) -> float:
+    """Predict brain age by finding the conditioning age that minimises CFM loss.
+
+    Uses a coarse-to-fine grid search. For each candidate age the CFM loss is
+    averaged over *n_repeats* evaluations with fixed seeds so every candidate
+    sees the same random timesteps and noise.
+
+    Args:
+        model: Trained FlowLet model.
+        volume: (1, 1, D, H, W) single-sample batch.
+        n_repeats: Evaluations per candidate (averaged for stability).
+        coarse_step: Age increment for the coarse sweep.
+        fine_step: Age increment for the fine sweep.
+        fine_range: Half-width around the best coarse age for refinement.
+
+    Returns:
+        Predicted brain age in years.
+    """
+    age_min = model.age_min
+    age_max = model.age_max
+
+    # Precompute wavelet coefficients (depend only on the volume, not on age)
+    coeffs = model.wavelet.forward(volume)
+
+    def eval_age(age_val: float) -> float:
+        age_t = torch.tensor([[age_val]], device=volume.device)
+        age_norm = (age_t - age_min) / (age_max - age_min)
+        age_norm = torch.clamp(age_norm, 0, 1)
+        total = 0.0
+        for r in range(n_repeats):
+            torch.manual_seed(42 + r)
+            loss, _ = model.cfm.compute_loss(coeffs, age_norm)
+            total += loss.item()
+        return total / n_repeats
+
+    # --- coarse grid ---
+    coarse_ages = np.arange(age_min, age_max + 0.1, coarse_step)
+    coarse_losses = [eval_age(float(a)) for a in coarse_ages]
+    best_coarse_age = float(coarse_ages[int(np.argmin(coarse_losses))])
+
+    # --- fine grid around best coarse hit ---
+    fine_lo = max(age_min, best_coarse_age - fine_range)
+    fine_hi = min(age_max, best_coarse_age + fine_range)
+    fine_ages = np.arange(fine_lo, fine_hi + 0.1, fine_step)
+    fine_losses = [eval_age(float(a)) for a in fine_ages]
+
+    return float(fine_ages[int(np.argmin(fine_losses))])
+
+
+@torch.no_grad()
 def evaluate_cfm_loss(
     model: FlowLet, test_loader: DataLoader, device: str
 ) -> Tuple[float, List[float]]:
@@ -291,8 +352,12 @@ def evaluate_generation(
     n_steps: int,
     temperature: float,
     max_samples: Optional[int],
+    n_age_repeats: int = 5,
 ) -> List[Dict]:
     """Generate volumes for test samples and compute per-sample metrics.
+
+    For each sample the function also predicts brain age via CFM-loss
+    minimisation (coarse-to-fine grid search).
 
     Returns:
         List of dicts with per-sample metrics and metadata.
@@ -321,6 +386,13 @@ def evaluate_generation(
             metrics = compute_sample_metrics(real_v, gen_v)
             metrics["age"] = age_val
             metrics["sample_idx"] = sample_count
+
+            # Brain age prediction
+            predicted = predict_brain_age(
+                model, volume[i : i + 1], n_repeats=n_age_repeats,
+            )
+            metrics["predicted_age"] = predicted
+
             results.append(metrics)
 
             sample_count += 1
@@ -328,7 +400,8 @@ def evaluate_generation(
                 print(
                     f"  Generated {sample_count} samples | "
                     f"MSE={metrics['mse']:.6f} MAE={metrics['mae']:.4f} "
-                    f"PSNR={metrics['psnr']:.2f} r={metrics['pearson_r']:.4f}"
+                    f"PSNR={metrics['psnr']:.2f} r={metrics['pearson_r']:.4f} "
+                    f"age={age_val:.1f} pred={predicted:.1f}"
                 )
 
     return results
@@ -346,6 +419,15 @@ def compute_aggregate_metrics(sample_results: List[Dict]) -> Dict[str, float]:
             agg[f"{col}_median"] = float(df[col].median())
             agg[f"{col}_min"] = float(df[col].min())
             agg[f"{col}_max"] = float(df[col].max())
+
+    # Brain age prediction accuracy
+    if "predicted_age" in df.columns and "age" in df.columns:
+        age_error = (df["predicted_age"] - df["age"]).abs()
+        agg["brain_age_mae"] = float(age_error.mean())
+        agg["brain_age_mae_std"] = float(age_error.std())
+        agg["brain_age_mae_median"] = float(age_error.median())
+        corr = df["predicted_age"].corr(df["age"])
+        agg["brain_age_r"] = float(corr) if not np.isnan(corr) else 0.0
 
     agg["n_samples"] = len(df)
     return agg
@@ -508,6 +590,32 @@ def save_metrics_plots(
     metric_cols = ["mse", "mae", "psnr", "pearson_r", "ssim"]
     metric_cols = [c for c in metric_cols if c in df.columns]
 
+    # 0. Predicted vs true age scatter (if prediction column exists)
+    if "predicted_age" in df.columns:
+        fig, ax = plt.subplots(figsize=(6, 6))
+        ax.scatter(df["age"], df["predicted_age"], alpha=0.6, s=20)
+        lims = [
+            min(df["age"].min(), df["predicted_age"].min()) - 2,
+            max(df["age"].max(), df["predicted_age"].max()) + 2,
+        ]
+        ax.plot(lims, lims, "r--", linewidth=1, label="ideal")
+        z = np.polyfit(df["age"], df["predicted_age"], 1)
+        p = np.poly1d(z)
+        xs = np.linspace(lims[0], lims[1], 100)
+        corr = df["predicted_age"].corr(df["age"])
+        mae = (df["predicted_age"] - df["age"]).abs().mean()
+        ax.plot(xs, p(xs), "b-", linewidth=2, label=f"fit (r={corr:.3f}, MAE={mae:.1f})")
+        ax.set_xlabel("True Age")
+        ax.set_ylabel("Predicted Age")
+        ax.set_title("Brain Age Prediction")
+        ax.legend()
+        ax.set_aspect("equal")
+        ax.set_xlim(lims)
+        ax.set_ylim(lims)
+        plt.tight_layout()
+        fig.savefig(plots_dir / "brain_age_prediction.png", dpi=150)
+        plt.close(fig)
+
     # 1. Metric distributions
     fig, axes = plt.subplots(1, len(metric_cols), figsize=(5 * len(metric_cols), 4))
     if len(metric_cols) == 1:
@@ -625,6 +733,7 @@ def main():
         n_steps=args.n_steps,
         temperature=args.temperature,
         max_samples=args.max_gen_samples,
+        n_age_repeats=args.n_age_repeats,
     )
     gen_time = time.time() - t0
     n_gen = len(sample_results)
@@ -700,6 +809,15 @@ def main():
                     f"{agg_metrics[mean_key]:.6f} +/- {agg_metrics[std_key]:.6f}\n"
                 )
 
+        if "brain_age_mae" in agg_metrics:
+            f.write("\n--- Brain Age Prediction ---\n")
+            f.write(
+                f"  MAE:         "
+                f"{agg_metrics['brain_age_mae']:.2f} +/- {agg_metrics['brain_age_mae_std']:.2f} years\n"
+            )
+            f.write(f"  Median AE:   {agg_metrics['brain_age_mae_median']:.2f} years\n")
+            f.write(f"  Pearson r:   {agg_metrics['brain_age_r']:.4f}\n")
+
         f.write(f"\n--- Per-Age-Bin Metrics ---\n")
         f.write(age_bin_df.to_string(index=False))
         f.write("\n")
@@ -735,6 +853,9 @@ def main():
     print(f"  PSNR:        {agg_metrics['psnr_mean']:.2f} +/- {agg_metrics['psnr_std']:.2f}")
     print(f"  Pearson r:   {agg_metrics['pearson_r_mean']:.4f} +/- {agg_metrics['pearson_r_std']:.4f}")
     print(f"  SSIM:        {agg_metrics['ssim_mean']:.4f} +/- {agg_metrics['ssim_std']:.4f}")
+    if "brain_age_mae" in agg_metrics:
+        print(f"  Brain Age MAE: {agg_metrics['brain_age_mae']:.2f} +/- {agg_metrics['brain_age_mae_std']:.2f} yrs")
+        print(f"  Brain Age r:   {agg_metrics['brain_age_r']:.4f}")
     print(f"  Results at:  {output_dir}")
     print("=" * 70)
 

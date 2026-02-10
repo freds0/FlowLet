@@ -1,0 +1,126 @@
+# @package _global_
+
+# Fine-tuning FlowLetLarge on OpenBHB for Brain Age Prediction
+# Loads a pretrained FlowLetLarge checkpoint from FOMO60k and fine-tunes
+# on the OpenBHB dataset for improved brain age prediction.
+# Requires 24+ GB VRAM (A100 80GB, H100 recommended)
+#
+# Usage:
+#   python flowlet/train.py experiment=flowlet_openbhb_finetune_large \
+#     ckpt_path=/path/to/fomo60k_large/checkpoint.ckpt \
+#     data.data_dir=/path/to/openbhb/data \
+#     data.metadata_file=/path/to/openbhb/metadata.csv
+
+defaults:
+  - override /data: openbhb
+  - override /model: flowlet
+  - override /callbacks: default
+  - override /logger: wandb
+  - override /trainer: gpu
+
+# Task name
+task_name: "openbhb_finetune_large"
+run_name: "openbhb_finetune_large_${now:%Y%m%d_%H%M%S}"
+
+# Enable training and testing
+train: true
+test: true
+
+# Checkpoint path (REQUIRED - provide via command line)
+# Example: ckpt_path=/path/to/fomo60k_large_checkpoint.ckpt
+ckpt_path: null
+
+# Random seed
+seed: 42
+
+# Tags for experiment tracking
+tags: ["openbhb", "finetune", "brain-age", "3d-mri", "flowlet-large"]
+
+# Trainer configuration
+trainer:
+  max_epochs: 100
+  check_val_every_n_epoch: 2
+  precision: 16-mixed
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 4  # Effective batch size: 2 * 4 = 8
+  accelerator: gpu
+  devices: 1
+  deterministic: false
+
+# Data configuration
+data:
+  batch_size: 2
+  augment_train: true
+  augment_val: false
+  cache_data: false
+  num_workers: 4
+
+# Model configuration - FlowLetLarge
+model:
+  _target_: flowlet.flowlet.FlowLetLarge
+  model_size: "large"
+  volume_shape: [128, 128, 128]
+  hidden_dims: [64, 128, 256, 512, 512]  # 5-level U-Net
+  wavelet: 'db4'
+  wavelet_level: 3
+  time_embed_dim: 512
+  cond_embed_dim: 128
+  num_res_blocks: 3
+  attention_levels: [2, 3, 4]
+  dropout: 0.1
+
+  # Fine-tuning hyperparameters (lower LR than pretraining)
+  learning_rate: 2e-5     # 5x lower than pretraining for larger model
+  weight_decay: 0.01
+  warmup_steps: 300       # Shorter warmup for fine-tuning
+  scheduler_type: "cosine"
+
+  # Sampling
+  n_sample_steps: 32
+
+  # Age normalization
+  age_min: 18.0
+  age_max: 90.0
+
+# Callbacks
+callbacks:
+  model_checkpoint:
+    dirpath: ${paths.output_dir}/checkpoints
+    filename: openbhb_finetune_large_epoch_{epoch:03d}
+    monitor: val/loss
+    mode: min
+    save_top_k: 5
+    save_last: true
+    every_n_epochs: 1
+    auto_insert_metric_name: true
+
+  early_stopping:
+    monitor: val/loss
+    patience: 15
+    mode: min
+    min_delta: 0.001
+
+# Logger configuration
+logger:
+  wandb:
+    project: "flowlet-openbhb"
+    name: "finetune_large_${now:%Y-%m-%d_%H-%M-%S}"
+    tags: ${tags}
+    notes: "Fine-tuning FlowLetLarge on OpenBHB from FOMO60k pretrained weights"
+    log_model: true
+    save_dir: ${paths.log_dir}
+
+# Notes:
+#
+# FlowLetLarge fine-tuning considerations:
+# 1. Use lower learning rate (2e-5) — larger models are more sensitive to LR
+# 2. Shorter warmup (300 steps) since weights are already pretrained
+# 3. Fewer epochs (100 vs 500) — converges faster from good initialization
+# 4. Keep dropout at 0.1 for regularization
+# 5. Early stopping with patience=15 to prevent overfitting
+# 6. Monitor val/loss closely — overfitting risk is higher with larger models
+#
+# Memory requirements:
+# - ~24 GB VRAM minimum with batch_size=2 + mixed precision
+# - If running out of memory, reduce batch_size to 1 and increase
+#   accumulate_grad_batches to 8
