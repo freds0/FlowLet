@@ -18,7 +18,7 @@ import torch.nn.functional as F
 from lightning import LightningModule
 from lightning.pytorch.utilities import grad_norm
 
-from flowlet.models.unet3d import UNet3D, UNet3DSmall, UNet3DLarge
+from flowlet.models.unet3d import UNet3D
 from flowlet.models.flow_matching import ConditionalFlowMatching, RectifiedFlowMatching
 from flowlet.utils.wavelet3d import Wavelet3DTransform
 
@@ -63,8 +63,8 @@ class FlowLet(LightningModule):
     def __init__(
         self,
         # Wavelet parameters
-        wavelet: str = 'db4',
-        wavelet_level: int = 3,
+        wavelet: str = 'haar',
+        wavelet_level: int = 1,
         # Volume parameters
         volume_shape: Tuple[int, int, int] = (128, 128, 128),
         # U-Net parameters
@@ -76,23 +76,22 @@ class FlowLet(LightningModule):
         dropout: float = 0.0,
         # CFM parameters
         sigma_min: float = 1e-4,
-        use_rectified_flow: bool = False,
+        use_rectified_flow: bool = True,
         # Training parameters
-        learning_rate: float = 1e-4,
+        learning_rate: float = 3e-6,
         weight_decay: float = 0.01,
-        warmup_steps: int = 1000,
+        warmup_steps: int = 0,
         # Scheduler parameters
         scheduler_type: str = "cosine",  # "cosine" or "constant"
+        scheduler_eta_min: float = 1e-7,
         # Sampling parameters
-        n_sample_steps: int = 32,
+        n_sample_steps: int = 10,
         # Data statistics
         data_mean: float = 0.0,
         data_std: float = 1.0,
         # Age range for normalization
         age_min: float = 18.0,
         age_max: float = 90.0,
-        # Model size variant
-        model_size: str = "base",  # "small", "base", or "large"
         # Optimizer
         optimizer: Optional[Any] = None,
         scheduler: Optional[Any] = None,
@@ -106,6 +105,7 @@ class FlowLet(LightningModule):
         self.weight_decay = weight_decay
         self.warmup_steps = warmup_steps
         self.scheduler_type = scheduler_type
+        self.scheduler_eta_min = scheduler_eta_min
         self.n_sample_steps = n_sample_steps
         self.age_min = age_min
         self.age_max = age_max
@@ -128,35 +128,17 @@ class FlowLet(LightningModule):
         self.wavelet_shape = tuple(dummy_coeffs.shape[1:])
         self.wavelet.reset_cache()
 
-        # Select U-Net variant
-        if model_size == "small":
-            UNetClass = UNet3DSmall
-        elif model_size == "large":
-            UNetClass = UNet3DLarge
-        else:
-            UNetClass = UNet3D
-
         # Initialize U-Net
-        unet_kwargs = {
-            'in_channels': wavelet_channels,
-            'out_channels': wavelet_channels,
-            'hidden_dims': hidden_dims,
-            'time_embed_dim': time_embed_dim,
-            'cond_embed_dim': cond_embed_dim,
-            'num_res_blocks': num_res_blocks,
-            'attention_levels': attention_levels,
-            'dropout': dropout,
-        }
-
-        # Only pass arguments that aren't overridden by the variant
-        if model_size == "base":
-            self.unet = UNet3D(**unet_kwargs)
-        else:
-            # Variants have their own defaults
-            self.unet = UNetClass(
-                in_channels=wavelet_channels,
-                out_channels=wavelet_channels,
-            )
+        self.unet = UNet3D(
+            in_channels=wavelet_channels,
+            out_channels=wavelet_channels,
+            hidden_dims=hidden_dims,
+            time_embed_dim=time_embed_dim,
+            cond_embed_dim=cond_embed_dim,
+            num_res_blocks=num_res_blocks,
+            attention_levels=attention_levels,
+            dropout=dropout,
+        )
 
         # Initialize CFM
         if use_rectified_flow:
@@ -616,11 +598,11 @@ class FlowLet(LightningModule):
                 },
             }
         elif self.scheduler_type == "cosine":
-            # Cosine annealing with warmup
+            # Cosine annealing (paper: eta_min=1e-7)
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 optimizer,
-                T_max=self.trainer.max_epochs if self.trainer else 500,
-                eta_min=1e-6,
+                T_max=self.trainer.max_epochs if self.trainer else 200,
+                eta_min=self.scheduler_eta_min,
             )
             return {
                 "optimizer": optimizer,
@@ -663,9 +645,12 @@ class FlowLetSmall(FlowLet):
     """Small FlowLet variant for limited GPU memory."""
 
     def __init__(self, **kwargs):
-        kwargs.setdefault('model_size', 'small')
         kwargs.setdefault('hidden_dims', [32, 64, 128, 256])
         kwargs.setdefault('wavelet_level', 2)
+        kwargs.setdefault('time_embed_dim', 128)
+        kwargs.setdefault('cond_embed_dim', 32)
+        kwargs.setdefault('num_res_blocks', 1)
+        kwargs.setdefault('attention_levels', [])
         super().__init__(**kwargs)
 
 
@@ -673,8 +658,11 @@ class FlowLetLarge(FlowLet):
     """Large FlowLet variant for high-quality generation."""
 
     def __init__(self, **kwargs):
-        kwargs.setdefault('model_size', 'large')
         kwargs.setdefault('hidden_dims', [64, 128, 256, 512, 512])
         kwargs.setdefault('wavelet_level', 3)
         kwargs.setdefault('num_res_blocks', 3)
+        kwargs.setdefault('time_embed_dim', 512)
+        kwargs.setdefault('cond_embed_dim', 128)
+        kwargs.setdefault('attention_levels', [2, 3, 4])
+        kwargs.setdefault('dropout', 0.1)
         super().__init__(**kwargs)

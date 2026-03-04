@@ -1,34 +1,38 @@
 # OpenBHB Dataset Configuration
-# For fine-tuning FlowLet on OpenBHB brain MRI data
+# Settings follow the FlowLet paper specifications
+# Dataset: https://huggingface.co/datasets/freds0/OpenBHB-Dataset
 
 _target_: flowlet.data.mri_datamodule.OpenBHBDataModule
 
-# Data paths (OpenBHB train sample)
+# Data paths (OpenBHB from HuggingFace)
 data_dir: /home/fred/Projetos/Einstein/openbhb_train_sample
 metadata_file: /home/fred/Projetos/Einstein/openbhb_train_sample/train.tsv
 
 # Data parameters
-target_shape: [128, 128, 128]  # Resize from (182, 218, 182) to (128, 128, 128)
-age_range: null  # Auto-infer from data (OpenBHB has wide age range)
+target_shape: [128, 128, 128]  # Resize from (182, 218, 182)
+age_range: null  # Auto-infer from data
 
-# DataLoader parameters
-batch_size: 2  # Keep small for 3D volumes
+# DataLoader parameters (paper: batch_size=4)
+batch_size: 4
 num_workers: 4
 pin_memory: true
 
-# Split parameters
-val_split: 0.1   # 10% for validation
-test_split: 0.1  # 10% for testing
+# Split parameters (paper: 80% train, 20% validation, no test)
+val_split: 0.2
+test_split: 0.0
 
-# Augmentation
+# Augmentation (paper: MONAI-based 3D rotations, intensity, noise)
 augment_train: true
 augment_val: false
 
 # Memory optimization
-cache_data: false  # Set to true if you have enough RAM
+cache_data: false
+
+# Diagnosis filter (paper: only CN/control subjects)
+filter_diagnosis: "control"
 
 # Site information
-include_site: false  # Set to true to include site info for domain adaptation
+include_site: false
 
 # Reproducibility
 seed: 42

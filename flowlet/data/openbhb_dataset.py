@@ -1,8 +1,18 @@
 """
-OpenBHB Dataset for FlowLet Fine-tuning.
+OpenBHB Dataset for FlowLet training.
 
 Loads 3D brain MRI volumes from the OpenBHB dataset (Hugging Face).
 Dataset contains preprocessed .npy volumes with metadata including age and site.
+
+Preprocessing follows the FlowLet paper:
+- Clip intensities to [0.5th, 99.5th] percentiles
+- Scale to [-1, 1]
+- Replication padding for wavelet compatibility
+
+Augmentation follows the paper:
+- Random 3D rotations (±10°)
+- Intensity scaling U(0.95, 1.05)
+- Gaussian noise (σ=0.01)
 """
 
 import random
@@ -39,6 +49,7 @@ class OpenBHBDataset(Dataset):
         augment: Whether to apply data augmentation
         cache_data: Whether to cache loaded volumes in memory
         include_site: Whether to include site information in output
+        filter_diagnosis: Filter by diagnosis column (e.g., 'control' for CN subjects)
         transform: Optional custom transform function
     """
 
@@ -52,6 +63,7 @@ class OpenBHBDataset(Dataset):
         augment: bool = False,
         cache_data: bool = False,
         include_site: bool = False,
+        filter_diagnosis: Optional[str] = "control",
         transform=None,
     ):
         super().__init__()
@@ -62,7 +74,11 @@ class OpenBHBDataset(Dataset):
         self.augment = augment
         self.cache_data = cache_data
         self.include_site = include_site
+        self.filter_diagnosis = filter_diagnosis
         self.transform = transform
+
+        # Initialize MONAI augmentation transforms (lazy, only when needed)
+        self._monai_transform = None
 
         # Load metadata
         self.metadata = self._load_metadata(metadata_file)
@@ -101,17 +117,30 @@ class OpenBHBDataset(Dataset):
         else:
             raise ValueError(f"Unsupported metadata format: {metadata_path.suffix}")
 
+        # Filter by diagnosis if specified (paper uses only CN/control subjects)
+        if self.filter_diagnosis is not None and 'diagnosis' in df.columns:
+            original_count = len(df)
+            df = df[df['diagnosis'] == self.filter_diagnosis].copy()
+            print(f"  Filtered by diagnosis='{self.filter_diagnosis}': "
+                  f"{original_count} -> {len(df)} samples")
+
         # Check if we need to construct the quasiraw_3d_path
         if 'quasiraw_3d_path' not in df.columns and 'participant_id' in df.columns:
-            # OpenBHB format: construct path from participant_id
-            # Format: quasiraw_3d/{participant_id}_quasiraw_3d.npy
-            df['quasiraw_3d_path'] = df['participant_id'].astype(str).apply(
-                lambda x: f"quasiraw_3d/{x}_quasiraw_3d.npy"
-            )
-            print("  ℹ Constructed quasiraw_3d_path from participant_id")
+            # HuggingFace OpenBHB format: train/quasiraw_3d/{id}_quasiraw_3d.npy
+            # Try both with and without 'train/' prefix
+            test_id = str(df['participant_id'].iloc[0])
+            if (self.data_dir / f"train/quasiraw_3d/{test_id}_quasiraw_3d.npy").exists():
+                df['quasiraw_3d_path'] = df['participant_id'].astype(str).apply(
+                    lambda x: f"train/quasiraw_3d/{x}_quasiraw_3d.npy"
+                )
+            else:
+                df['quasiraw_3d_path'] = df['participant_id'].astype(str).apply(
+                    lambda x: f"quasiraw_3d/{x}_quasiraw_3d.npy"
+                )
+            print("  Constructed quasiraw_3d_path from participant_id")
 
         # Validate required columns
-        required_cols = ['participant_id', 'age', 'site', 'quasiraw_3d_path']
+        required_cols = ['participant_id', 'age', 'quasiraw_3d_path']
         missing_cols = [col for col in required_cols if col not in df.columns]
 
         if missing_cols:
@@ -208,10 +237,10 @@ class OpenBHBDataset(Dataset):
 
     def _preprocess(self, volume: np.ndarray) -> np.ndarray:
         """
-        Preprocess volume: resize and normalize.
-
-        OpenBHB volumes are typically (182, 218, 182).
-        We resize to target_shape and apply z-score normalization.
+        Preprocess volume following the FlowLet paper:
+        1. Resize to target_shape
+        2. Clip intensities to [0.5th, 99.5th] percentiles
+        3. Scale to [-1, 1]
         """
         from scipy.ndimage import zoom
 
@@ -220,50 +249,56 @@ class OpenBHBDataset(Dataset):
             factors = [t / s for t, s in zip(self.target_shape, volume.shape)]
             volume = zoom(volume, factors, order=1)
 
-        # Intensity normalization
+        # Intensity normalization (paper: percentile clip + [-1, 1] scaling)
         if self.normalize:
-            # Create brain mask (non-background voxels)
-            # Use percentile to avoid background
-            threshold = np.percentile(volume, 5)
-            mask = volume > threshold
+            # Clip to [0.5th, 99.5th] percentiles to remove outliers
+            p_low = np.percentile(volume, 0.5)
+            p_high = np.percentile(volume, 99.5)
+            volume = np.clip(volume, p_low, p_high)
 
-            if mask.sum() > 0:
-                # Z-score normalization within brain mask
-                brain_mean = volume[mask].mean()
-                brain_std = volume[mask].std() + 1e-8
-                volume = (volume - brain_mean) / brain_std
-
-                # Clip extreme values to prevent outliers
-                volume = np.clip(volume, -5, 5)
+            # Scale to [-1, 1]
+            v_min = volume.min()
+            v_max = volume.max()
+            if v_max - v_min > 1e-8:
+                volume = 2.0 * (volume - v_min) / (v_max - v_min) - 1.0
+            else:
+                volume = np.zeros_like(volume)
 
         return volume
 
+    def _get_monai_transform(self):
+        """Lazily initialize MONAI augmentation transforms (paper spec)."""
+        if self._monai_transform is None:
+            from monai.transforms import Compose, RandAffine, RandGaussianNoise
+
+            self._monai_transform = Compose([
+                # Random 3D rotation ±10° (0.1745 rad) - paper spec
+                RandAffine(
+                    prob=0.5,
+                    rotate_range=(0.1745, 0.1745, 0.1745),
+                    mode='bilinear',
+                    padding_mode='border',
+                ),
+                # Gaussian noise σ=0.01 - paper spec
+                RandGaussianNoise(prob=0.5, mean=0.0, std=0.01),
+            ])
+        return self._monai_transform
+
     def _apply_augmentation(self, volume: torch.Tensor) -> torch.Tensor:
         """
-        Apply random augmentations for training.
-
-        Includes:
-        - Random flipping (left-right, anterior-posterior)
-        - Random intensity scaling
-        - Random noise addition
+        Apply augmentations following the FlowLet paper:
+        - Random 3D rotations (±10°) via MONAI RandAffine
+        - Intensity scaling U(0.95, 1.05)
+        - Gaussian noise (σ=0.01)
         """
-        # Random left-right flip
-        if random.random() > 0.5:
-            volume = torch.flip(volume, dims=[1])  # Flip along depth
+        # MONAI transforms (3D rotation + Gaussian noise)
+        transform = self._get_monai_transform()
+        volume = transform(volume)
 
-        # Random anterior-posterior flip
+        # Random intensity scaling U(0.95, 1.05) - paper spec
         if random.random() > 0.5:
-            volume = torch.flip(volume, dims=[2])  # Flip along height
-
-        # Random intensity scaling
-        if random.random() > 0.5:
-            scale = random.uniform(0.9, 1.1)
+            scale = random.uniform(0.95, 1.05)
             volume = volume * scale
-
-        # Random Gaussian noise
-        if random.random() > 0.7:
-            noise = torch.randn_like(volume) * 0.05
-            volume = volume + noise
 
         return volume
 
@@ -308,7 +343,9 @@ class OpenBHBDataset(Dataset):
         new_dataset.augment = self.augment
         new_dataset.cache_data = False  # Don't share cache
         new_dataset.include_site = self.include_site
+        new_dataset.filter_diagnosis = self.filter_diagnosis
         new_dataset.transform = self.transform
+        new_dataset._monai_transform = None
         new_dataset.metadata = df.reset_index(drop=True)
         new_dataset._cache = {} if self.cache_data else None
 
@@ -331,7 +368,9 @@ class OpenBHBDataset(Dataset):
         new_dataset.augment = self.augment
         new_dataset.cache_data = False
         new_dataset.include_site = self.include_site
+        new_dataset.filter_diagnosis = self.filter_diagnosis
         new_dataset.transform = self.transform
+        new_dataset._monai_transform = None
         new_dataset.metadata = df.reset_index(drop=True)
         new_dataset._cache = {} if self.cache_data else None
 

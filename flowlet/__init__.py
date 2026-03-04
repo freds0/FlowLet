@@ -4,7 +4,7 @@ FlowLet: Conditional 3D Brain MRI Synthesis using Wavelet Flow Matching.
 Adapted from FlowMAC architecture for 3D medical image generation.
 """
 
-from flowlet.flowlet import FlowLet
+from flowlet.flowlet import FlowLet, FlowLetSmall, FlowLetLarge
 
 __version__ = "0.1.0"
-__all__ = ["FlowLet"]
+__all__ = ["FlowLet", "FlowLetSmall", "FlowLetLarge"]

@@ -1,11 +1,12 @@
 # FlowLet Model Configuration
 # Conditional 3D Brain MRI Synthesis using Wavelet Flow Matching
+# Defaults follow the paper specifications
 
 _target_: flowlet.flowlet.FlowLet
 
-# Wavelet parameters
-wavelet: 'db4'        # Daubechies 4 wavelet
-wavelet_level: 3      # 3 levels of decomposition
+# Wavelet parameters (paper: Haar, level 1 -> 8 channels)
+wavelet: 'haar'
+wavelet_level: 1
 
 # Volume parameters
 volume_shape: [128, 128, 128]  # Target MRI volume shape (D, H, W)
@@ -18,18 +19,19 @@ num_res_blocks: 2                 # Residual blocks per level
 attention_levels: [2, 3]          # Levels with attention (0-indexed)
 dropout: 0.0                      # Dropout rate
 
-# CFM parameters
-sigma_min: 1e-4           # Minimum noise level for OT-CFM
-use_rectified_flow: false # Use rectified flow instead of OT-CFM
+# CFM parameters (paper: Rectified Flow Matching)
+sigma_min: 1e-4
+use_rectified_flow: true
 
-# Training parameters
-learning_rate: 1e-4
+# Training parameters (paper: lr=3e-6, no warmup)
+learning_rate: 3e-6
 weight_decay: 0.01
-warmup_steps: 1000
-scheduler_type: "cosine"  # "cosine" or "constant"
+warmup_steps: 0
+scheduler_type: "cosine"
+scheduler_eta_min: 1e-7  # Paper: cosine annealing to 1e-7
 
-# Sampling parameters
-n_sample_steps: 32
+# Sampling parameters (paper: 10 ODE steps)
+n_sample_steps: 10
 
 # Data statistics (for normalization)
 data_mean: 0.0
@@ -42,7 +44,7 @@ age_max: 90.0
 # Model size variant: "small", "base", or "large"
 model_size: "base"
 
-# Optimizer (can be overridden in experiment config)
+# Optimizer (paper: AdamW)
 optimizer:
   _target_: torch.optim.AdamW
   _partial_: true
