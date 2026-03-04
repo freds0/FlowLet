@@ -41,9 +41,6 @@ data_std: 1.0
 age_min: 18.0
 age_max: 90.0
 
-# Model size variant: "small", "base", or "large"
-model_size: "base"
-
 # Optimizer (paper: AdamW)
 optimizer:
   _target_: torch.optim.AdamW
