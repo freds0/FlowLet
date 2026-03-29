@@ -1,0 +1,47 @@
+# @package _global_
+
+# Configuration for training the LARGE version of FlowLet
+# Focused on maximum synthesis quality for 128x128x128 volumes
+
+defaults:
+  - override /data: openbhb
+  - override /model: flowlet
+  - override /callbacks: default
+  - override /logger: tensorboard
+  - override /trainer: gpu
+
+task_name: "flowlet_large"
+run_name: "flowlet_large_128x128"
+
+# Model Parameters (Large version as defined in flowlet.py)
+model:
+  _target_: flowlet.flowlet.FlowLetLarge
+  
+  # Architecture settings inherited from FlowLetLarge
+  hidden_dims: [64, 128, 256, 512, 512]  # 5-level U-Net
+  wavelet_level: 3                       # 3-level wavelet decomposition
+  num_res_blocks: 3                      # 3 residual blocks per level
+  time_embed_dim: 512                    # Timestep embedding dimension
+  cond_embed_dim: 128                    # Age condition embedding dimension
+  attention_levels: [2, 3, 4]            # Attention at the deepest resolutions
+  dropout: 0.1                           # Dropout for regularization
+  
+  # Generation and Training Settings
+  use_rectified_flow: true               # Recommended for training stability
+  learning_rate: 3e-6                    # Default learning rate from the paper
+  weight_decay: 0.01                     # Weight decay for AdamW
+  n_sample_steps: 10                     # Optimal sampling steps for performance/speed balance
+
+# Trainer Configuration
+trainer:
+  max_epochs: 200                        # Total training epochs
+  precision: 16-mixed                    # Use AMP to reduce VRAM consumption
+  gradient_clip_val: 1.0                 # Gradient clipping (L2 norm)
+  accelerator: gpu
+  devices: 1
+
+# Data Configuration
+data:
+  batch_size: 4                          # Standard batch size for 24GB+ VRAM
+  target_shape: [128, 128, 128]          # Target MRI volume shape
+  augment_train: true                    # Enable MONAI-based 3D augmentations
