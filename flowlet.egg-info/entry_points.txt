@@ -1,3 +1,0 @@
-[console_scripts]
-flowlet-sample = scripts.sample:main
-flowlet-train = flowlet.train:main
