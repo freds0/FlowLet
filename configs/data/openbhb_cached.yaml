@@ -1,0 +1,31 @@
+# OpenBHB Cached Dataset Configuration
+# Uses pre-cached preprocessed volumes for 70x faster loading
+# Cache created by preprocess_cache.py
+
+_target_: flowlet.data.cached_datamodule.CachedOpenBHBDataModule
+
+# Cache paths
+cache_dir: /root/DATASETS/openbhb_data/train_cache_128
+metadata_file: /root/DATASETS/openbhb_data/train.tsv
+
+# DataLoader parameters (paper: batch_size=4)
+batch_size: 4
+num_workers: 4
+pin_memory: true
+
+# Split parameters (paper: 80% train, 20% validation, no test)
+val_split: 0.2
+test_split: 0.0
+
+# Augmentation (paper: MONAI-based 3D rotations, intensity, noise)
+augment_train: true
+augment_val: false
+
+# Diagnosis filter (paper: only CN/control subjects)
+filter_diagnosis: "control"
+
+# Site information
+include_site: false
+
+# Reproducibility
+seed: 42

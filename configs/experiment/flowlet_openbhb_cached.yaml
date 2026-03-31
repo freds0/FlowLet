@@ -1,0 +1,105 @@
+# @package _global_
+
+# FlowLet training on OpenBHB using PRE-CACHED dataset (70x faster!)
+# Based on flowlet_openbhb_paper.yaml but uses CachedOpenBHBDataModule
+#
+# Key paper settings:
+#   - Haar wavelet, level 1 (8 channels)
+#   - Rectified Flow Matching (RFM)
+#   - lr=3e-6, cosine annealing to 1e-7
+#   - 200 epochs, batch_size=4
+#   - AMP (16-mixed), gradient clipping L2=1.0
+#   - OpenBHB CN subjects only, 80/20 split
+#   - 10 ODE sampling steps
+#
+# Usage:
+#   python flowlet/train.py experiment=flowlet_openbhb_cached model=flowlet_large logger=wandb
+
+defaults:
+  - override /data: openbhb_cached
+  - override /model: flowlet
+  - override /callbacks: default
+  - override /logger: tensorboard
+  - override /trainer: gpu
+
+# Task name
+task_name: "openbhb_cached"
+run_name: "flowlet_openbhb_cached_${now:%Y%m%d_%H%M%S}"
+
+# Enable training and testing
+train: true
+test: false  # Paper: no separate test set
+
+# Checkpoint path (null for training from scratch)
+ckpt_path: null
+
+# Random seed
+seed: 42
+
+# Tags for experiment tracking
+tags: ["openbhb", "paper", "haar", "rfm", "brain-age", "cached"]
+
+# Trainer configuration (paper specs)
+trainer:
+  max_epochs: 1000
+  check_val_every_n_epoch: 1
+  precision: 16-mixed  # Paper: AMP with GradScaler
+  gradient_clip_val: 1.0  # Paper: L2 norm = 1.0
+  accumulate_grad_batches: 1  # Paper: batch_size=4 directly
+  accelerator: gpu
+  devices: 1
+  deterministic: false
+
+# Data configuration (paper specs)
+data:
+  batch_size: 4  # Paper: batch_size=4
+  augment_train: true  # Paper: 3D rotations, intensity, noise
+  augment_val: false
+  num_workers: 4
+  val_split: 0.2  # Paper: 80/20 split
+  test_split: 0.0
+  filter_diagnosis: "control"  # Paper: CN subjects only
+
+# Model configuration (paper specs)
+model:
+  # Wavelet (paper: Haar, level 1 -> 8 channels)
+  wavelet: 'haar'
+  wavelet_level: 1
+
+  # Flow matching (paper: RFM)
+  use_rectified_flow: true
+
+  # Training (paper: lr=3e-6, AdamW)
+  learning_rate: 3e-6
+  weight_decay: 0.01
+  warmup_steps: 0
+  scheduler_type: "cosine"
+  scheduler_eta_min: 1e-7
+
+  # Sampling (paper: 10 ODE steps)
+  n_sample_steps: 10
+
+  # No dropout for paper baseline
+  dropout: 0.0
+
+  # Age normalization (auto-inferred from data)
+  age_min: 18.0
+  age_max: 90.0
+
+# Callbacks
+callbacks:
+  model_checkpoint:
+    dirpath: ${paths.output_dir}/checkpoints
+    filename: flowlet_openbhb_epoch_{epoch:03d}
+    monitor: val/loss
+    mode: min
+    save_top_k: 5
+    save_last: true
+    every_n_epochs: 1
+    auto_insert_metric_name: true
+
+  early_stopping:
+    monitor: val/loss
+    patience: 30
+    mode: min
+    min_delta: 0.0001
