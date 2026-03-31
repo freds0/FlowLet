@@ -247,6 +247,68 @@ model = FlowLetLarge()   # 24+ GB GPU
 | `flowlet_fomo60k.yaml` | base (128³) | Full FOMO60k training |
 | `flowlet_fomo60k_min_memory.yaml` | small (96³) | FOMO60k on limited GPU |
 
+### Resuming Training from a Checkpoint
+
+To resume training from a saved checkpoint, pass the `ckpt_path` parameter. This restores model weights, optimizer state, scheduler, epoch, and callbacks — training continues exactly where it stopped.
+
+```bash
+# Resume from the last saved checkpoint
+python flowlet/train.py experiment=flowlet_openbhb_paper \
+  data.data_dir=/path/to/openbhb \
+  data.metadata_file=/path/to/train.tsv \
+  ckpt_path=/path/to/checkpoints/last.ckpt
+```
+
+Checkpoints are saved under `logs/<task_name>/<run_name>/checkpoints/`. The `last.ckpt` file is always kept up-to-date (one per epoch). To extend training beyond the original number of epochs:
+
+```bash
+python flowlet/train.py experiment=flowlet_openbhb_paper \
+  ckpt_path=/path/to/last.ckpt \
+  trainer.max_epochs=400
+```
+
+### Experiment Logging
+
+By default, training logs to **TensorBoard**. You can switch to [Weights & Biases (wandb)](https://wandb.ai) or use both simultaneously.
+
+**Prerequisites for wandb:**
+
+```bash
+pip install wandb
+wandb login
+```
+
+**Using wandb:**
+
+```bash
+# Use wandb as the logger
+python flowlet/train.py experiment=flowlet_openbhb_paper \
+  logger=wandb
+
+# Customize project and run name
+python flowlet/train.py experiment=flowlet_openbhb_paper \
+  logger=wandb \
+  logger.wandb.project="my-project" \
+  logger.wandb.name="run-001"
+
+# Resume a wandb run (pass the run id)
+python flowlet/train.py experiment=flowlet_openbhb_paper \
+  logger=wandb \
+  logger.wandb.id="abc123xyz" \
+  ckpt_path=/path/to/last.ckpt
+
+# Offline mode (sync later with `wandb sync`)
+python flowlet/train.py experiment=flowlet_openbhb_paper \
+  logger=wandb \
+  logger.wandb.offline=True
+
+# Use both wandb and TensorBoard
+python flowlet/train.py experiment=flowlet_openbhb_paper \
+  logger=[wandb,tensorboard]
+```
+
+Logger configs are located in `configs/logger/`. Available options: `tensorboard`, `wandb`, `csv`, `mlflow`, `neptune`, `comet`, `aim`.
+
 ## Acknowledgements
 
 This implementation is based on the paper:

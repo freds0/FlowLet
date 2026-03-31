@@ -1,0 +1,52 @@
+# FlowLet Large Model Configuration
+# 5-level U-Net with 219M parameters
+
+_target_: flowlet.flowlet.FlowLet
+
+# Wavelet parameters (paper: Haar, level 1 -> 8 channels)
+wavelet: 'haar'
+wavelet_level: 1
+
+# Volume parameters
+volume_shape: [128, 128, 128]
+
+# U-Net 3D parameters (large: 5 levels)
+hidden_dims: [64, 128, 256, 512, 512]
+time_embed_dim: 256
+cond_embed_dim: 64
+num_res_blocks: 2
+attention_levels: [2, 3]
+dropout: 0.0
+
+# CFM parameters (paper: Rectified Flow Matching)
+sigma_min: 1e-4
+use_rectified_flow: true
+
+# Training parameters (paper: lr=3e-6, no warmup)
+learning_rate: 3e-6
+weight_decay: 0.01
+warmup_steps: 0
+scheduler_type: "cosine"
+scheduler_eta_min: 1e-7
+
+# Sampling parameters (paper: 10 ODE steps)
+n_sample_steps: 10
+
+# Data statistics
+data_mean: 0.0
+data_std: 1.0
+
+# Age range
+age_min: 18.0
+age_max: 90.0
+
+# Optimizer (paper: AdamW)
+optimizer:
+  _target_: torch.optim.AdamW
+  _partial_: true
+  lr: ${model.learning_rate}
+  weight_decay: ${model.weight_decay}
+  betas: [0.9, 0.999]
+  eps: 1e-8
+
+scheduler: null

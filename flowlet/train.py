@@ -91,9 +91,10 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         utils.log_hyperparameters(object_dict)
 
     # Allow loading checkpoints without weights_only restriction (needed for PyTorch >= 2.6)
+    import typing
     from omegaconf import ListConfig, DictConfig as OmegaDictConfig
     from omegaconf.base import ContainerMetadata
-    torch.serialization.add_safe_globals([ListConfig, OmegaDictConfig, ContainerMetadata])
+    torch.serialization.add_safe_globals([ListConfig, OmegaDictConfig, ContainerMetadata, typing.Any])
 
     # Training
     if cfg.get("train"):
@@ -102,6 +103,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
             model=model,
             datamodule=datamodule,
             ckpt_path=cfg.get("ckpt_path"),
+            weights_only=False,
         )
 
     train_metrics = trainer.callback_metrics
