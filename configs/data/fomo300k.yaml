@@ -22,4 +22,13 @@ include_site: false
 
 # Set for smoke tests, for example: data.max_samples=32.
 max_samples: null
+
+# Validate selected T1w members before creating train/validation splits.
+validate_archives: true
+validation_cache_file: /root/DATASETS/FOMO300K_brain_age/.flowlet_t1w_validation.csv
+validation_workers: 4
+
+# Secondary safeguard if a validated ZIP changes while training is running.
+skip_corrupt_files: true
+max_corrupt_retries: 8
 seed: 42

@@ -40,6 +40,11 @@ data:
   augment_train: true
   augment_val: false
   cache_data: false
+  validate_archives: true
+  validation_cache_file: /root/DATASETS/FOMO300K_brain_age/.flowlet_t1w_validation.csv
+  validation_workers: 4
+  skip_corrupt_files: true
+  max_corrupt_retries: 8
   num_workers: 4
   val_split: 0.2
   test_split: 0.0

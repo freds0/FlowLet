@@ -1,5 +1,8 @@
 """Lightning DataModule for FOMO300K brain-age training."""
 
+import gzip
+import warnings
+import zipfile
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -23,16 +26,41 @@ class MRIBatchCollate:
 class FOMO300KSubset(Subset):
     """Apply augmentation per split without mutating the shared dataset."""
 
-    def __init__(self, dataset: FOMO300KDataset, indices, augment: bool = False):
+    def __init__(
+        self,
+        dataset: FOMO300KDataset,
+        indices,
+        augment: bool = False,
+        skip_corrupt_files: bool = True,
+        max_corrupt_retries: int = 8,
+    ):
         super().__init__(dataset, indices)
         self.augment = augment
+        self.skip_corrupt_files = skip_corrupt_files
+        self.max_corrupt_retries = max_corrupt_retries
 
     def __getitem__(self, idx):
-        data = super().__getitem__(idx)
-        if self.augment:
-            data = data.copy()
-            data["volume"] = self.dataset._apply_augmentation(data["volume"])
-        return data
+        for attempt in range(self.max_corrupt_retries + 1):
+            candidate_idx = (idx + attempt) % len(self.indices)
+            try:
+                data = super().__getitem__(candidate_idx)
+                if self.augment:
+                    data = data.copy()
+                    data["volume"] = self.dataset._apply_augmentation(data["volume"])
+                return data
+            except (gzip.BadGzipFile, zipfile.BadZipFile, EOFError) as exc:
+                if not self.skip_corrupt_files or attempt == self.max_corrupt_retries:
+                    raise
+                path = self.dataset.metadata.iloc[self.indices[candidate_idx]]["zip_path"]
+                warnings.warn(
+                    f"Skipping unreadable FOMO300K ZIP {path}: {exc}",
+                    RuntimeWarning,
+                )
+
+        raise RuntimeError("Failed to load a non-corrupt FOMO300K sample.")
+
+    def __getitems__(self, indices):
+        return [self[idx] for idx in indices]
 
 
 class FOMO300KDataModule(LightningDataModule):
@@ -53,6 +81,11 @@ class FOMO300KDataModule(LightningDataModule):
         cache_data: bool = False,
         include_site: bool = False,
         max_samples: Optional[int] = None,
+        validate_archives: bool = True,
+        validation_cache_file: Optional[str] = None,
+        validation_workers: int = 4,
+        skip_corrupt_files: bool = True,
+        max_corrupt_retries: int = 8,
         seed: int = 42,
     ):
         super().__init__()
@@ -70,6 +103,11 @@ class FOMO300KDataModule(LightningDataModule):
         self.cache_data = cache_data
         self.include_site = include_site
         self.max_samples = max_samples
+        self.validate_archives = validate_archives
+        self.validation_cache_file = validation_cache_file
+        self.validation_workers = validation_workers
+        self.skip_corrupt_files = skip_corrupt_files
+        self.max_corrupt_retries = max_corrupt_retries
         self.seed = seed
         self.train_dataset = None
         self.val_dataset = None
@@ -85,6 +123,9 @@ class FOMO300KDataModule(LightningDataModule):
             cache_data=self.cache_data,
             include_site=self.include_site,
             max_samples=self.max_samples,
+            validate_archives=self.validate_archives,
+            validation_cache_file=self.validation_cache_file,
+            validation_workers=self.validation_workers,
         )
         if self.age_range is None:
             self.age_range = full_dataset.age_range
@@ -100,9 +141,15 @@ class FOMO300KDataModule(LightningDataModule):
             [n_train, n_val, n_test],
             generator=torch.Generator().manual_seed(self.seed),
         )
-        self.train_dataset = FOMO300KSubset(full_dataset, train.indices, self.augment_train)
-        self.val_dataset = FOMO300KSubset(full_dataset, val.indices, self.augment_val)
-        self.test_dataset = FOMO300KSubset(full_dataset, test.indices, False)
+        self.train_dataset = FOMO300KSubset(
+            full_dataset, train.indices, self.augment_train, self.skip_corrupt_files, self.max_corrupt_retries
+        )
+        self.val_dataset = FOMO300KSubset(
+            full_dataset, val.indices, self.augment_val, self.skip_corrupt_files, self.max_corrupt_retries
+        )
+        self.test_dataset = FOMO300KSubset(
+            full_dataset, test.indices, False, self.skip_corrupt_files, self.max_corrupt_retries
+        )
 
         stats = full_dataset.get_age_statistics()
         print(
