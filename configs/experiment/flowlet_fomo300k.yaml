@@ -1,0 +1,76 @@
+# @package _global_
+
+# FlowLet training on locally downloaded age-labelled FOMO300K T1w scans.
+#
+# Usage:
+#   python flowlet/train.py experiment=flowlet_fomo300k
+
+defaults:
+  - override /data: fomo300k
+  - override /model: flowlet
+  - override /callbacks: default
+  - override /logger: tensorboard
+  - override /trainer: gpu
+
+task_name: "fomo300k"
+run_name: "flowlet_fomo300k_${now:%Y%m%d_%H%M%S}"
+
+train: true
+test: false
+ckpt_path: null
+seed: 42
+
+tags: ["fomo300k", "t1w", "haar", "rfm", "brain-age"]
+
+trainer:
+  max_epochs: 200
+  check_val_every_n_epoch: 1
+  precision: 16-mixed
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+  accelerator: gpu
+  devices: 1
+  deterministic: false
+
+data:
+  data_dir: /root/DATASETS/FOMO300K_brain_age
+  batch_size: 4
+  target_shape: [128, 128, 128]
+  age_range: [-17.0, 96.0]
+  augment_train: true
+  augment_val: false
+  cache_data: false
+  num_workers: 4
+  val_split: 0.2
+  test_split: 0.0
+
+model:
+  wavelet: "haar"
+  wavelet_level: 1
+  use_rectified_flow: true
+  learning_rate: 3e-6
+  weight_decay: 0.01
+  warmup_steps: 0
+  scheduler_type: "cosine"
+  scheduler_eta_min: 1e-7
+  n_sample_steps: 10
+  dropout: 0.0
+  age_min: -17.0
+  age_max: 96.0
+
+callbacks:
+  model_checkpoint:
+    dirpath: ${paths.output_dir}/checkpoints
+    filename: flowlet_fomo300k_epoch_{epoch:03d}
+    monitor: val/loss
+    mode: min
+    save_top_k: 5
+    save_last: true
+    every_n_epochs: 1
+    auto_insert_metric_name: true
+
+  early_stopping:
+    monitor: val/loss
+    patience: 30
+    mode: min
+    min_delta: 0.0001

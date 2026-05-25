@@ -1,0 +1,17 @@
+[2026-05-25 20:40:49,563][__main__][INFO] - Instantiating datamodule <flowlet.data.fomo300k_datamodule.FOMO300KDataModule>
+[2026-05-25 20:40:49,729][__main__][INFO] - Instantiating model <flowlet.flowlet.FlowLet>
+[2026-05-25 20:40:50,272][__main__][INFO] - Model: FlowLet(
+  wavelet_shape=(8, 64, 64, 64),
+  volume_shape=[128, 128, 128],
+  num_parameters=131,170,312,
+)
+[2026-05-25 20:40:50,272][__main__][INFO] - Number of parameters: 131,170,312
+[2026-05-25 20:40:50,273][__main__][INFO] - Instantiating callbacks...
+[2026-05-25 20:40:50,273][flowlet.utils.instantiators][INFO] - Instantiating callback <lightning.pytorch.callbacks.ModelCheckpoint>
+[2026-05-25 20:40:50,275][flowlet.utils.instantiators][INFO] - Instantiating callback <lightning.pytorch.callbacks.RichModelSummary>
+[2026-05-25 20:40:50,276][flowlet.utils.instantiators][INFO] - Instantiating callback <lightning.pytorch.callbacks.RichProgressBar>
+[2026-05-25 20:40:50,276][__main__][INFO] - Instantiating loggers...
+[2026-05-25 20:40:50,276][flowlet.utils.instantiators][INFO] - Instantiating logger <lightning.pytorch.loggers.tensorboard.TensorBoardLogger>
+[2026-05-25 20:40:50,277][__main__][INFO] - Instantiating trainer <lightning.pytorch.trainer.Trainer>
+[2026-05-25 20:40:50,296][__main__][INFO] - Logging hyperparameters!
+[2026-05-25 20:40:50,399][__main__][INFO] - Starting training!
