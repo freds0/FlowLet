@@ -303,8 +303,8 @@ class FlowLet(LightningModule):
         return loss
 
     def on_validation_epoch_end(self) -> None:
-        """Log sample images at the end of validation."""
-        if not self.trainer.is_global_zero:
+        """Log sample images after full validation epochs, not sanity checks."""
+        if self.trainer.sanity_checking or not self.trainer.is_global_zero:
             return
 
         try:

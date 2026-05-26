@@ -214,6 +214,9 @@ python flowlet/train.py experiment=flowlet_oasis
 
 # Base for FOMO60k
 python flowlet/train.py experiment=flowlet_fomo60k
+
+# Base for the local FOMO300K brain-age dataset
+python flowlet/train.py experiment=flowlet_fomo300k
 ```
 
 Or override directly on the command line:
@@ -246,6 +249,7 @@ model = FlowLetLarge()   # 24+ GB GPU
 | `flowlet_oasis.yaml` | base (128³) | Full OASIS training |
 | `flowlet_fomo60k.yaml` | base (128³) | Full FOMO60k training |
 | `flowlet_fomo60k_min_memory.yaml` | small (96³) | FOMO60k on limited GPU |
+| `flowlet_fomo300k.yaml` | base (128³) | Local FOMO300K brain-age fine-tuning |
 
 ### Resuming Training from a Checkpoint
 
@@ -270,6 +274,19 @@ python flowlet/train.py experiment=flowlet_openbhb_paper \
 ### Experiment Logging
 
 By default, training logs to **TensorBoard**. You can switch to [Weights & Biases (wandb)](https://wandb.ai) or use both simultaneously.
+
+The `flowlet_fomo300k` experiment also uses **TensorBoard** by default. To log
+the FOMO300K training run to wandb instead, override its logger:
+
+```bash
+python flowlet/train.py experiment=flowlet_fomo300k \
+  logger=wandb \
+  logger.wandb.project="flowlet" \
+  logger.wandb.name="fomo300k-train"
+
+# Use wandb and TensorBoard for FOMO300K simultaneously
+python flowlet/train.py experiment=flowlet_fomo300k logger=many_loggers
+```
 
 **Prerequisites for wandb:**
 

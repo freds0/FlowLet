@@ -20,11 +20,24 @@ test: false
 ckpt_path: null
 seed: 42
 
+# Pretrained OpenBHB weights used to initialize FOMO300K fine-tuning.
+# This does not restore epoch or optimizer state; use ckpt_path to resume a run.
+initial_checkpoint:
+  enabled: true
+  repo_id: freds0/flowlet
+  filename: last.ckpt
+  revision: main
+  cache_dir: ${paths.data_dir}/pretrained/flowlet
+  token: null
+  strict: true
+
 tags: ["fomo300k", "t1w", "haar", "rfm", "brain-age"]
 
 trainer:
   max_epochs: 200
   check_val_every_n_epoch: 1
+  # Avoid expensive full-resolution validation batches before the first train batch.
+  num_sanity_val_steps: 0
   precision: 16-mixed
   gradient_clip_val: 1.0
   accumulate_grad_batches: 1
@@ -34,7 +47,7 @@ trainer:
 
 data:
   data_dir: /root/DATASETS/FOMO300K_brain_age
-  batch_size: 4
+  batch_size: 6
   target_shape: [128, 128, 128]
   age_range: [-17.0, 96.0]
   augment_train: true

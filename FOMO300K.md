@@ -18,6 +18,19 @@ pip install -e .
 python flowlet/train.py experiment=flowlet_fomo300k
 ```
 
+Before the first training run, the experiment downloads `last.ckpt` from
+[`freds0/flowlet`](https://huggingface.co/freds0/flowlet) and loads its model
+weights as initialization. The checkpoint is approximately 2.64 GB and is
+cached under `data/pretrained/flowlet`. It initializes weights only; use
+`ckpt_path=/path/to/last.ckpt` when resuming an interrupted FOMO300K run.
+
+This experiment sets `trainer.num_sanity_val_steps=0` because a full-resolution
+validation batch with the pretrained 3D model is expensive and otherwise runs
+before the first training batch. Validation remains enabled after each epoch.
+With `logger=wandb` and `data.num_workers=4`, startup can also print four sets
+of `alembic.autogenerate` plugin messages while data workers initialize; these
+messages are not an error or a blocked W&B connection.
+
 The T1w subset contains 29,118 acquisitions with recorded ages from -17 to 96
 years, including prenatal scans. The experiment config sets the model's age
 normalization to that full range instead of clipping it to the OpenBHB default.

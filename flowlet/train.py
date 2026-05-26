@@ -32,6 +32,31 @@ from flowlet import utils
 log = utils.get_pylogger(__name__)
 
 
+def load_initial_checkpoint(model: LightningModule, cfg: DictConfig) -> Optional[str]:
+    """Load pretrained weights without restoring optimizer or trainer state."""
+    checkpoint_cfg = cfg.get("initial_checkpoint")
+    if not checkpoint_cfg or not checkpoint_cfg.get("enabled", False):
+        return None
+    if cfg.get("ckpt_path"):
+        log.info("Skipping initial checkpoint because ckpt_path resumes an existing training run.")
+        return None
+
+    from huggingface_hub import hf_hub_download
+
+    path = hf_hub_download(
+        repo_id=checkpoint_cfg.repo_id,
+        filename=checkpoint_cfg.filename,
+        revision=checkpoint_cfg.get("revision"),
+        cache_dir=checkpoint_cfg.get("cache_dir"),
+        token=checkpoint_cfg.get("token"),
+    )
+    log.info(f"Loading initial weights from <{path}>")
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    state_dict = checkpoint.get("state_dict", checkpoint)
+    model.load_state_dict(state_dict, strict=checkpoint_cfg.get("strict", True))
+    return path
+
+
 @utils.task_wrapper
 def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
@@ -59,6 +84,14 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     log.info(f"Model: {model}")
     log.info(f"Number of parameters: {model.num_parameters:,}")
 
+    # Allow loading checkpoints without weights_only restriction (needed for PyTorch >= 2.6)
+    import typing
+    from omegaconf import ListConfig, DictConfig as OmegaDictConfig
+    from omegaconf.base import ContainerMetadata
+    torch.serialization.add_safe_globals([ListConfig, OmegaDictConfig, ContainerMetadata, typing.Any])
+
+    initial_checkpoint_path = load_initial_checkpoint(model, cfg)
+
     # Instantiate callbacks
     log.info("Instantiating callbacks...")
     callbacks: List[Callback] = utils.instantiate_callbacks(cfg.get("callbacks"))
@@ -83,18 +116,13 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         "callbacks": callbacks,
         "logger": logger,
         "trainer": trainer,
+        "initial_checkpoint_path": initial_checkpoint_path,
     }
 
     # Log hyperparameters
     if logger:
         log.info("Logging hyperparameters!")
         utils.log_hyperparameters(object_dict)
-
-    # Allow loading checkpoints without weights_only restriction (needed for PyTorch >= 2.6)
-    import typing
-    from omegaconf import ListConfig, DictConfig as OmegaDictConfig
-    from omegaconf.base import ContainerMetadata
-    torch.serialization.add_safe_globals([ListConfig, OmegaDictConfig, ContainerMetadata, typing.Any])
 
     # Training
     if cfg.get("train"):
