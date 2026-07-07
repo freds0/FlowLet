@@ -25,7 +25,7 @@ use_rectified_flow: true
 
 # Training parameters (paper: lr=3e-6, no warmup)
 learning_rate: 3e-6
-weight_decay: 0.01
+weight_decay: 1e-5  # official AdamW weight_decay
 warmup_steps: 0
 scheduler_type: "cosine"
 scheduler_eta_min: 1e-7  # Paper: cosine annealing to 1e-7
@@ -37,9 +37,10 @@ n_sample_steps: 10
 data_mean: 0.0
 data_std: 1.0
 
-# Age range for normalization (will be overridden by data config)
-age_min: 18.0
-age_max: 90.0
+# Age range for normalization (official condition_ranges.json range; set to the
+# training set's actual min/max — the datamodule logs the inferred range to verify)
+age_min: 5.90
+age_max: 95.46
 
 # Optimizer (paper: AdamW)
 optimizer:

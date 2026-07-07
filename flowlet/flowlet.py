@@ -79,7 +79,7 @@ class FlowLet(LightningModule):
         use_rectified_flow: bool = True,
         # Training parameters
         learning_rate: float = 3e-6,
-        weight_decay: float = 0.01,
+        weight_decay: float = 1e-5,
         warmup_steps: int = 0,
         # Scheduler parameters
         scheduler_type: str = "cosine",  # "cosine" or "constant"
@@ -89,9 +89,9 @@ class FlowLet(LightningModule):
         # Data statistics
         data_mean: float = 0.0,
         data_std: float = 1.0,
-        # Age range for normalization
-        age_min: float = 18.0,
-        age_max: float = 90.0,
+        # Age range for normalization (official condition_ranges.json range)
+        age_min: float = 5.90,
+        age_max: float = 95.46,
         # Optimizer
         optimizer: Optional[Any] = None,
         scheduler: Optional[Any] = None,

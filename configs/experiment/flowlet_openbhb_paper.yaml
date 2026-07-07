@@ -74,7 +74,7 @@ model:
 
   # Training (paper: lr=3e-6, AdamW)
   learning_rate: 3e-6
-  weight_decay: 0.01
+  weight_decay: 1e-5  # official AdamW weight_decay
   warmup_steps: 0
   scheduler_type: "cosine"
   scheduler_eta_min: 1e-7
@@ -85,9 +85,9 @@ model:
   # No dropout for paper baseline
   dropout: 0.0
 
-  # Age normalization (auto-inferred from data)
-  age_min: 18.0
-  age_max: 90.0
+  # Age normalization (official condition_ranges.json range; match training set)
+  age_min: 5.90
+  age_max: 95.46
 
 # Callbacks
 callbacks:

@@ -44,6 +44,23 @@ class Wavelet3DTransform(nn.Module):
         self.level = level
         self.mode = mode
 
+        # Guardrail: with level > 1 the detail subbands at different scales have
+        # different shapes and are force-resized to the coarsest approximation shape
+        # via lossy trilinear `zoom` (see `_resize_3d`). That resize is NOT
+        # invertible, so reconstruction of a level>1 decomposition is only
+        # approximate -- e.g. FlowLetLarge (wavelet_level=3). The paper config
+        # (Haar, level 1) is exact because all subbands share one shape. Prefer the
+        # official matrix-based single-level Haar DWT for multi-level fidelity.
+        if level > 1:
+            import warnings
+            warnings.warn(
+                f"Wavelet3DTransform(level={level}): detail subbands are resized to "
+                f"the approximation shape, so reconstruction is lossy / non-invertible. "
+                f"Only level=1 gives exact reconstruction.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
         # Subband keys for 3D wavelet (ordered consistently)
         self.detail_keys = ['aad', 'ada', 'add', 'daa', 'dad', 'dda', 'ddd']
 

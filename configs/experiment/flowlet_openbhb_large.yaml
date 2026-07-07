@@ -29,7 +29,7 @@ model:
   # Generation and Training Settings
   use_rectified_flow: true               # Recommended for training stability
   learning_rate: 3e-6                    # Default learning rate from the paper
-  weight_decay: 0.01                     # Weight decay for AdamW
+  weight_decay: 1e-5                     # Weight decay for AdamW (official)
   n_sample_steps: 10                     # Optimal sampling steps for performance/speed balance
 
 # Trainer Configuration

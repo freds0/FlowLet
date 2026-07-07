@@ -158,6 +158,7 @@ class ResBlock3D(nn.Module):
         emb_dim: int,
         groups: int = 8,
         dropout: float = 0.0,
+        cond_dim: Optional[int] = None,
     ):
         super().__init__()
 
@@ -170,11 +171,22 @@ class ResBlock3D(nn.Module):
         self.conv1 = nn.Conv3d(in_channels, out_channels, 3, padding=1)
         self.norm1 = nn.GroupNorm(groups_1, out_channels)
 
-        # Time/condition embedding projection
+        # Time embedding projection (additive)
         self.emb_proj = nn.Sequential(
             nn.SiLU(),
             nn.Linear(emb_dim, out_channels)
         )
+
+        # Condition (age) FiLM projection -> per-channel (scale, shift).
+        # Mirrors the official ResBlock, which modulates every block with the
+        # condition embedding instead of adding it once globally.
+        if cond_dim is not None:
+            self.cond_film = nn.Sequential(
+                nn.SiLU(),
+                nn.Linear(cond_dim, 2 * out_channels)
+            )
+        else:
+            self.cond_film = None
 
         # Second convolution block
         self.conv2 = nn.Conv3d(out_channels, out_channels, 3, padding=1)
@@ -191,11 +203,17 @@ class ResBlock3D(nn.Module):
 
         self.act = nn.SiLU()
 
-    def forward(self, x: torch.Tensor, emb: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        emb: torch.Tensor,
+        cond_emb: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """
         Args:
             x: (B, C, D, H, W) - Input feature map
-            emb: (B, emb_dim) - Time + condition embedding
+            emb: (B, emb_dim) - Time (+ condition) embedding, added
+            cond_emb: (B, cond_dim) - Condition embedding for FiLM modulation
 
         Returns:
             (B, out_channels, D, H, W) - Output feature map
@@ -203,9 +221,14 @@ class ResBlock3D(nn.Module):
         h = self.conv1(x)
         h = self.norm1(h)
 
-        # Add embedding (broadcast to spatial dimensions)
+        # Add time embedding (broadcast to spatial dimensions)
         emb_out = self.emb_proj(emb)[:, :, None, None, None]
         h = h + emb_out
+
+        # FiLM condition modulation: h = h * (1 + scale) + shift
+        if self.cond_film is not None and cond_emb is not None:
+            scale, shift = self.cond_film(cond_emb)[:, :, None, None, None].chunk(2, dim=1)
+            h = h * (1 + scale) + shift
 
         h = self.act(h)
         h = self.dropout(h)
@@ -229,51 +252,81 @@ class AttentionBlock3D(nn.Module):
         channels: int,
         num_heads: int = 4,
         head_dim: int = 32,
+        context_dim: Optional[int] = None,
     ):
         super().__init__()
 
         self.channels = channels
         self.num_heads = num_heads
         self.head_dim = head_dim
-        inner_dim = num_heads * head_dim
+        self.inner_dim = num_heads * head_dim
 
         self.norm = nn.GroupNorm(8, channels)
-        self.to_qkv = nn.Conv3d(channels, inner_dim * 3, 1)
-        self.to_out = nn.Conv3d(inner_dim, channels, 1)
+        self.to_qkv = nn.Conv3d(channels, self.inner_dim * 3, 1)
+        self.to_out = nn.Conv3d(self.inner_dim, channels, 1)
 
         self.scale = head_dim ** -0.5
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Optional cross-attention to the condition embedding, mirroring the
+        # official SpatialTransformerConditional. The condition is a single token,
+        # so spatial queries attend to it as a learned global modulation.
+        self.context_dim = context_dim
+        if context_dim is not None:
+            self.norm_cross = nn.GroupNorm(8, channels)
+            self.norm_context = nn.LayerNorm(context_dim)
+            self.to_q_cross = nn.Conv3d(channels, self.inner_dim, 1)
+            self.to_kv_cross = nn.Linear(context_dim, self.inner_dim * 2, bias=False)
+            self.to_out_cross = nn.Conv3d(self.inner_dim, channels, 1)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        context: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """
         Args:
             x: (B, C, D, H, W) - Input feature map
+            context: (B, context_dim) - Condition embedding for cross-attention
 
         Returns:
             (B, C, D, H, W) - Output feature map with attention
         """
         B, C, D, H, W = x.shape
+        N = D * H * W
+
+        # --- Self-attention ---
         residual = x
-
-        x = self.norm(x)
-
-        # Compute Q, K, V
-        qkv = self.to_qkv(x)
-        qkv = qkv.reshape(B, 3, self.num_heads, self.head_dim, D * H * W)
+        h = self.norm(x)
+        qkv = self.to_qkv(h).reshape(B, 3, self.num_heads, self.head_dim, N)
         qkv = qkv.permute(1, 0, 2, 4, 3)  # (3, B, heads, N, head_dim)
         q, k, v = qkv[0], qkv[1], qkv[2]
 
-        # Attention
         attn = torch.matmul(q, k.transpose(-1, -2)) * self.scale
         attn = F.softmax(attn, dim=-1)
+        out = torch.matmul(attn, v)  # (B, heads, N, head_dim)
+        out = out.permute(0, 1, 3, 2).reshape(B, self.inner_dim, D, H, W)
+        x = residual + self.to_out(out)
 
-        # Apply attention to values
-        out = torch.matmul(attn, v)
-        out = out.permute(0, 1, 3, 2)  # (B, heads, head_dim, N)
-        out = out.reshape(B, self.num_heads * self.head_dim, D, H, W)
+        # --- Cross-attention to condition ---
+        if self.context_dim is not None and context is not None:
+            residual2 = x
+            hq = self.norm_cross(x)
+            q_c = self.to_q_cross(hq).reshape(B, self.num_heads, self.head_dim, N)
+            q_c = q_c.permute(0, 1, 3, 2)  # (B, heads, N, head_dim)
 
-        out = self.to_out(out)
+            ctx = self.norm_context(context)  # (B, context_dim)
+            kv = self.to_kv_cross(ctx)        # (B, 2 * inner_dim)
+            k_c, v_c = kv.chunk(2, dim=-1)
+            k_c = k_c.reshape(B, self.num_heads, 1, self.head_dim)
+            v_c = v_c.reshape(B, self.num_heads, 1, self.head_dim)
 
-        return out + residual
+            attn_c = torch.matmul(q_c, k_c.transpose(-1, -2)) * self.scale  # (B, heads, N, 1)
+            attn_c = F.softmax(attn_c, dim=-1)
+            out_c = torch.matmul(attn_c, v_c)  # (B, heads, N, head_dim)
+            out_c = out_c.permute(0, 1, 3, 2).reshape(B, self.inner_dim, D, H, W)
+            x = residual2 + self.to_out_cross(out_c)
+
+        return x
 
 
 class Downsample3D(nn.Module):
@@ -368,12 +421,12 @@ class UNet3D(nn.Module):
         for i, dim in enumerate(hidden_dims):
             blocks = nn.ModuleList()
             for _ in range(num_res_blocks):
-                blocks.append(ResBlock3D(prev_ch, dim, total_emb_dim, groups, dropout))
+                blocks.append(ResBlock3D(prev_ch, dim, total_emb_dim, groups, dropout, cond_dim=total_emb_dim))
                 prev_ch = dim
 
             # Add attention at specified levels
             if i in attention_levels:
-                blocks.append(AttentionBlock3D(dim))
+                blocks.append(AttentionBlock3D(dim, context_dim=total_emb_dim))
 
             self.encoders.append(blocks)
 
@@ -385,9 +438,9 @@ class UNet3D(nn.Module):
 
         # Bottleneck
         self.bottleneck = nn.ModuleList([
-            ResBlock3D(hidden_dims[-1], hidden_dims[-1], total_emb_dim, groups, dropout),
-            AttentionBlock3D(hidden_dims[-1]),
-            ResBlock3D(hidden_dims[-1], hidden_dims[-1], total_emb_dim, groups, dropout),
+            ResBlock3D(hidden_dims[-1], hidden_dims[-1], total_emb_dim, groups, dropout, cond_dim=total_emb_dim),
+            AttentionBlock3D(hidden_dims[-1], context_dim=total_emb_dim),
+            ResBlock3D(hidden_dims[-1], hidden_dims[-1], total_emb_dim, groups, dropout, cond_dim=total_emb_dim),
         ])
 
         # Decoder
@@ -409,12 +462,12 @@ class UNet3D(nn.Module):
             blocks = nn.ModuleList()
             for j in range(num_res_blocks):
                 in_ch = total_ch if j == 0 else dim
-                blocks.append(ResBlock3D(in_ch, dim, total_emb_dim, groups, dropout))
+                blocks.append(ResBlock3D(in_ch, dim, total_emb_dim, groups, dropout, cond_dim=total_emb_dim))
 
             # Add attention at specified levels (mirrored)
             level_idx = len(hidden_dims) - 1 - i
             if level_idx in attention_levels:
-                blocks.append(AttentionBlock3D(dim))
+                blocks.append(AttentionBlock3D(dim, context_dim=total_emb_dim))
 
             self.decoders.append(blocks)
             prev_ch = dim
@@ -430,24 +483,39 @@ class UNet3D(nn.Module):
         self._initialize_weights()
 
     def _initialize_weights(self):
-        """Initialize network weights."""
+        """Initialize network weights.
+
+        Uses PyTorch default init for conv/linear (the previous blanket
+        kaiming_normal with nonlinearity='relu' was mismatched for a SiLU/attention
+        network) and zero-inits the residual/output convolutions so ResBlocks and
+        attention blocks start near identity -- the flow-matching-friendly
+        initialization the official model gets from `zero_module`.
+        """
         for m in self.modules():
-            if isinstance(m, nn.Conv3d):
-                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.GroupNorm):
+            if isinstance(m, nn.GroupNorm):
                 nn.init.ones_(m.weight)
                 nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.Linear):
-                nn.init.kaiming_normal_(m.weight, nonlinearity='relu')
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
 
-        # Zero initialize output conv for better training stability
+        # Zero-init the final output conv.
         nn.init.zeros_(self.output_conv[-1].weight)
         if self.output_conv[-1].bias is not None:
             nn.init.zeros_(self.output_conv[-1].bias)
+
+        # Zero-init each ResBlock's second conv and each attention block's output
+        # projection(s) so they contribute nothing at init (identity residual).
+        for m in self.modules():
+            if isinstance(m, ResBlock3D):
+                nn.init.zeros_(m.conv2.weight)
+                if m.conv2.bias is not None:
+                    nn.init.zeros_(m.conv2.bias)
+            elif isinstance(m, AttentionBlock3D):
+                nn.init.zeros_(m.to_out.weight)
+                if m.to_out.bias is not None:
+                    nn.init.zeros_(m.to_out.bias)
+                if getattr(m, 'to_out_cross', None) is not None:
+                    nn.init.zeros_(m.to_out_cross.weight)
+                    if m.to_out_cross.bias is not None:
+                        nn.init.zeros_(m.to_out_cross.bias)
 
     def forward(
         self,
@@ -470,7 +538,8 @@ class UNet3D(nn.Module):
         t_emb = self.time_embed(t)
         t_emb = self.time_mlp(t_emb)
         c_emb = self.cond_mlp(cond)
-        emb = t_emb + c_emb  # Additive combination
+        emb = t_emb + c_emb  # Additive time+condition (existing global path)
+        cond_ctx = c_emb     # Dedicated condition signal for FiLM / cross-attention
 
         # Initial convolution
         h = self.input_conv(x)
@@ -479,10 +548,7 @@ class UNet3D(nn.Module):
         skips = []
         for encoder, downsampler in zip(self.encoders, self.downsamplers):
             for block in encoder:
-                if isinstance(block, ResBlock3D):
-                    h = block(h, emb)
-                else:
-                    h = block(h)
+                h = self._apply_block(block, h, emb, cond_ctx)
             skips.append(h)
             h = downsampler(h)
 
@@ -491,10 +557,7 @@ class UNet3D(nn.Module):
 
         # Bottleneck
         for block in self.bottleneck:
-            if isinstance(block, ResBlock3D):
-                h = block(h, emb)
-            else:
-                h = block(h)
+            h = self._apply_block(block, h, emb, cond_ctx)
 
         # Decoder path with skip connections
         for i, (upsampler, decoder) in enumerate(zip(self.upsamplers, self.decoders)):
@@ -509,14 +572,20 @@ class UNet3D(nn.Module):
                 h = torch.cat([h, skip], dim=1)
 
             for block in decoder:
-                if isinstance(block, ResBlock3D):
-                    h = block(h, emb)
-                else:
-                    h = block(h)
+                h = self._apply_block(block, h, emb, cond_ctx)
 
         # Output
         v = self.output_conv(h)
 
         return v
+
+    @staticmethod
+    def _apply_block(block, h, emb, cond_ctx):
+        """Dispatch a block with the embeddings it consumes."""
+        if isinstance(block, ResBlock3D):
+            return block(h, emb, cond_ctx)
+        if isinstance(block, AttentionBlock3D):
+            return block(h, context=cond_ctx)
+        return block(h)
 
 
